@@ -29,6 +29,8 @@ from typing import Optional
 
 # ── ANSI colour codes ─────────────────────────────────────────────────────────
 
+import re
+
 RESET = "\033[0m"
 BOLD  = "\033[1m"
 
@@ -40,27 +42,51 @@ LEVEL_COLOURS: dict[str, str] = {
     "CRITICAL": "\033[1;31m", # Bold Red
 }
 
+TAG_COLOURS: dict[str, str] = {
+    "EMBEDDING":         "\033[1;36m", # Bold Cyan
+    "NORMALIZATION":     "\033[1;33m", # Bold Yellow
+    "DATABASE":          "\033[1;35m", # Bold Magenta
+    "RAW INGEST":        "\033[1;32m", # Bold Green
+    "VALIDATION":        "\033[1;34m", # Bold Blue
+    "ROUTING":           "\033[1;36m", # Bold Cyan
+    "PARSING":           "\033[1;33m", # Bold Yellow
+    "PIPELINE START":    "\033[1;32m", # Bold Green
+    "TRACE":             "\033[1;30m", # Bold Dark Grey
+    "PIPELINE COMPLETE": "\033[1;32m", # Bold Green
+}
+
 
 # ── Custom formatter ──────────────────────────────────────────────────────────
 
 class ColouredFormatter(logging.Formatter):
     """
     Renders each log line with ANSI colour applied to the level name.
-    The timestamp and source location are left in neutral (white/grey) so
-    the coloured level keyword is the first thing your eye catches.
-
-    Format:
-        2026-06-10 18:00:00,123 | INFO     | auth.py:42 | User logged in
+    Automatically colorizes bracketed uppercase tags like [EMBEDDING] in the message.
     """
 
     BASE_FMT = "%(asctime)s | {colour}%(levelname)-8s{reset} | %(name)s:%(lineno)d | %(message)s"
     DATE_FMT = "%Y-%m-%d %H:%M:%S"
 
     def format(self, record: logging.LogRecord) -> str:
+        original_msg = record.msg
+        if isinstance(record.msg, str):
+            def replace_tag(match):
+                tag = match.group(1)
+                color = TAG_COLOURS.get(tag, "\033[1;36m") # Default bold cyan
+                return f"{color}[{tag}]{RESET}"
+            
+            # Match bracketed tags containing uppercase letters, spaces, hyphens, or underscores
+            record.msg = re.sub(r"\[([A-Z0-9\s_/\-]+)\]", replace_tag, record.msg)
+
         colour = LEVEL_COLOURS.get(record.levelname, RESET)
         fmt = self.BASE_FMT.format(colour=colour, reset=RESET)
         formatter = logging.Formatter(fmt, datefmt=self.DATE_FMT)
-        return formatter.format(record)
+        res = formatter.format(record)
+        
+        # Restore original message to avoid mutating it permanently
+        record.msg = original_msg
+        return res
+
 
 
 # ── Plain formatter (for file handlers / structured logs) ────────────────────
