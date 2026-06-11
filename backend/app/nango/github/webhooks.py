@@ -14,6 +14,9 @@ from app.features.embeddings.service import embedding_service
 from app.core.config import get_settings
 
 
+from app.nango.google_calendar.webhooks import process_google_calendar_records
+from app.nango.gmail.webhooks import process_gmail_records
+
 logger = get_logger(__name__)
 router = APIRouter(prefix="/webhooks/nango", tags=["Webhooks"])
 
@@ -47,10 +50,19 @@ async def handle_nango_global_webhook(request: Request, supabase_client = Depend
     connection_id = payload.get("connectionId")
     model_name = payload.get("model")
 
-    if webhook_type == "sync" and provider == "github" and connection_id and model_name:
-        logger.info(f"Detected Nango Sync Notification for model '{model_name}'. Fetching actual records from Nango API...")
-        records = await fetch_nango_records(provider, connection_id, model_name)
-        return await process_github_records(records, supabase_client)
+    if webhook_type == "sync" and connection_id and model_name:
+        if provider == "github":
+            logger.info(f"Detected Nango Sync Notification for model '{model_name}'. Fetching actual records from Nango API...")
+            records = await fetch_nango_records(provider, connection_id, model_name)
+            return await process_github_records(records, supabase_client)
+        elif provider == "google-calendar":
+            logger.info(f"Detected Nango Sync Notification for model '{model_name}'. Fetching actual records from Nango API...")
+            records = await fetch_nango_records(provider, connection_id, model_name)
+            return await process_google_calendar_records(records, supabase_client)
+        elif provider == "google-mail":
+            logger.info(f"Detected Nango Sync Notification for model '{model_name}'. Fetching actual records from Nango API...")
+            records = await fetch_nango_records(provider, connection_id, model_name)
+            return await process_gmail_records(records, supabase_client)
 
     if provider == "github":
         response_results = payload.get("responseResults", {})
@@ -68,9 +80,34 @@ async def handle_nango_global_webhook(request: Request, supabase_client = Depend
             records = payload.get("results", payload.get("data", [payload]))
             
         return await process_github_records(records, supabase_client)
+    elif provider == "google-calendar":
+        response_results = payload.get("responseResults", {})
+        records = []
+        if isinstance(response_results, dict):
+            for model_name, model_records in response_results.items():
+                if isinstance(model_records, list):
+                    records.extend(model_records)
+        elif isinstance(response_results, list):
+            records = response_results
+        if not records:
+            records = payload.get("results", payload.get("data", [payload]))
+        return await process_google_calendar_records(records, supabase_client)
+    elif provider == "google-mail":
+        response_results = payload.get("responseResults", {})
+        records = []
+        if isinstance(response_results, dict):
+            for model_name, model_records in response_results.items():
+                if isinstance(model_records, list):
+                    records.extend(model_records)
+        elif isinstance(response_results, list):
+            records = response_results
+        if not records:
+            records = payload.get("results", payload.get("data", [payload]))
+        return await process_gmail_records(records, supabase_client)
     else:
         logger.warning(f"Webhook received for unsupported provider config key: '{provider}'. Skipping.")
         return {"status": "ignored", "reason": f"unsupported provider: {provider}"}
+
 
 
 @router.post("/github", status_code=status.HTTP_200_OK)

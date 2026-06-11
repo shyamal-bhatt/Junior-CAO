@@ -18,6 +18,7 @@ def _get_model():
     global _model
     if _model is None:
         logger.info("Initializing local SentenceTransformer model 'BAAI/bge-large-en-v1.5'...")
+        # pyrefly: ignore [missing-import]
         from sentence_transformers import SentenceTransformer
         # Load local model (downloads on first use)
         _model = SentenceTransformer('BAAI/bge-large-en-v1.5')

@@ -95,6 +95,7 @@ class PDFAttachmentParser:
         """
         try:
             # Dynamically import PyPDF2
+            # pyrefly: ignore [missing-import]
             import PyPDF2
             
             logger.info("[PARSING] Executing PDF raw text extraction via PyPDF2")
