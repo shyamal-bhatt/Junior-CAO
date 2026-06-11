@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     NANGO_SECRET_KEY:      str = ""
     NANGO_SERVER_URL:      str = "https://api.nango.dev"
 
+    # ── Supabase ─────────────────────────────────────────────────────────────
+    SUPABASE_URL:          str = ""
+    SUPABASE_KEY:          str = ""
+
+    # ── OpenAI / Embeddings ──────────────────────────────────────────────────
+    OPENAI_API_KEY:        str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

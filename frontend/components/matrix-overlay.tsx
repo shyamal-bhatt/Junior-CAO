@@ -93,36 +93,107 @@ export function MatrixOverlay() {
     window.addEventListener("pointerup", onPointerUp)
   }
 
-  const send = (text: string) => {
+  const send = async (text: string) => {
     const trimmed = text.trim()
     if (!trimmed) return
     const userMsg: Message = { id: Date.now(), role: "user", text: trimmed }
-    setMessages((m) => [...m, userMsg])
+    const nextMessages = [...messages, userMsg]
+    setMessages(nextMessages)
     setInput("")
     setLoading(true)
-    setTimeout(() => {
+
+    try {
+      const formattedMessages = nextMessages.map((m) => ({
+        role: m.role,
+        content: m.text,
+      }))
+      const response = await fetch("http://localhost:8000/api/v1/chat/", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          messages: formattedMessages,
+          model: "openai/gpt-4o-mini",
+          stream: false,
+          context: grabbed ? "Organization/Linkmate" : null,
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
+
+      const data = await response.json()
       setMessages((m) => [
         ...m,
         {
-          id: Date.now() + 1,
+          id: Date.now(),
           role: "assistant",
-          text: `> Processing inquiry... response synthesized for "${trimmed.slice(0, 32)}".`,
+          text: data.reply,
         },
       ])
+    } catch (error) {
+      console.error("Failed to send message to backend:", error)
+      setMessages((m) => [
+        ...m,
+        {
+          id: Date.now(),
+          role: "assistant",
+          text: "> ERROR: Failed to communicate with backend.",
+        },
+      ])
+    } finally {
       setLoading(false)
-    }, 1900)
+    }
   }
 
-  const handleAction = (id: string) => {
-    const labels: Record<string, string> = {
-      search: "> SEARCH DB :: scanning Supabase vectors for [Linkmate]...",
-      summarize: "> SUMMARIZE :: condensing captured context...",
-      task: "> CREATE TASK :: writing entry to tasks table...",
+  const handleAction = async (id: string) => {
+    setLoading(true)
+    try {
+      const formattedMessages = messages.map((m) => ({
+        role: m.role,
+        content: m.text,
+      }))
+      const response = await fetch("http://localhost:8000/api/v1/chat/action", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: id,
+          context: grabbed ? "Organization/Linkmate" : null,
+          messages: formattedMessages,
+          model: "openai/gpt-4o-mini",
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
+
+      const data = await response.json()
+      setMessages((m) => [
+        ...m,
+        {
+          id: Date.now(),
+          role: "assistant",
+          text: data.result,
+        },
+      ])
+    } catch (error) {
+      console.error("Failed to run action on backend:", error)
+      setMessages((m) => [
+        ...m,
+        {
+          id: Date.now(),
+          role: "assistant",
+          text: `> ERROR: Failed to execute action [${id.toUpperCase()}].`,
+        },
+      ])
+    } finally {
+      setLoading(false)
     }
-    setMessages((m) => [
-      ...m,
-      { id: Date.now(), role: "assistant", text: labels[id] ?? "> ..." },
-    ])
   }
 
   // ── Docked: the slim edge pill ────────────────────────────────────────────
