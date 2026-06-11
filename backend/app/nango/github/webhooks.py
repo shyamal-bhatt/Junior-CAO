@@ -41,8 +41,16 @@ async def handle_nango_global_webhook(request: Request, supabase_client = Depend
     provider = payload.get("providerConfigKey") or payload.get("provider")
     
     if provider == "github":
-        # Extract sync results if present, otherwise fallback
-        records = payload.get("responseResults", {}).get("github", []) or payload.get("responseResults", [])
+        response_results = payload.get("responseResults", {})
+        records = []
+        if isinstance(response_results, dict):
+            # Flatten all model lists (e.g. Issue, PullRequest) into a single list of records
+            for model_name, model_records in response_results.items():
+                if isinstance(model_records, list):
+                    records.extend(model_records)
+        elif isinstance(response_results, list):
+            records = response_results
+            
         if not records:
             # Fallback to direct records structure
             records = payload.get("results", payload.get("data", [payload]))
@@ -75,9 +83,19 @@ async def handle_github_webhook(request: Request, supabase_client = Depends(get_
     if isinstance(payload, list):
         records = payload
     elif isinstance(payload, dict):
-        records = payload.get("responseResults", {}).get("github", []) or payload.get("responseResults", []) or payload.get("results", payload.get("data", [payload]))
+        response_results = payload.get("responseResults", {})
+        if isinstance(response_results, dict):
+            for model_records in response_results.values():
+                if isinstance(model_records, list):
+                    records.extend(model_records)
+        elif isinstance(response_results, list):
+            records = response_results
+            
+        if not records:
+            records = payload.get("results", payload.get("data", [payload]))
     
     return await process_github_records(records, supabase_client)
+
 
 
 async def process_github_records(records: List[Dict[str, Any]], supabase_client) -> Dict[str, Any]:
