@@ -51,9 +51,6 @@ class Settings(BaseSettings):
     SUPABASE_URL:          str = ""
     SUPABASE_KEY:          str = ""
 
-    # ── OpenAI / Embeddings ──────────────────────────────────────────────────
-    OPENAI_API_KEY:        str = ""
-
 
 @lru_cache
 def get_settings() -> Settings:
