@@ -5,12 +5,14 @@ FastAPI service logic to capture real incoming webhooks from Nango's GitHub inte
 """
 
 import json
+import httpx
 from typing import List, Dict, Any
 from fastapi import APIRouter, Request, Depends, HTTPException, status
 from app.core.logging import get_logger
 from app.core.supabase import get_supabase_client
 from app.features.embeddings.service import embedding_service
 from app.core.config import get_settings
+
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/webhooks/nango", tags=["Webhooks"])
