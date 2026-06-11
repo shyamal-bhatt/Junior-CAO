@@ -38,6 +38,10 @@ frontend/.env*.local
 
 # Agents & Skills
 .agents/
+.claude/
+.cursor/
+.gemini/
+.hermes/
 skills-lock.json
 
 # IDEs and Editors

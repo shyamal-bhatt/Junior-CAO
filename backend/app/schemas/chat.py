@@ -89,3 +89,23 @@ class ActionResponse(BaseModel):
     action:  ActionType
     result:  str
     model:   str
+
+
+class AgentResponse(BaseModel):
+    """
+    Response from the LangGraph agent pipeline (POST /chat/agent).
+
+    Fields
+    ------
+    reply        Final grounded answer from the synthesis stage.
+    model        OpenRouter model slug used.
+    sources      Retrieved context chunks (list of dicts with chunk_text,
+                 title, author, platform, status, created_at, similarity).
+                 Empty list when no_tool_needed was chosen.
+    tool_rounds  Number of tool-calling rounds the agent performed (0–5).
+    """
+    reply:       str
+    model:       str
+    sources:     list[dict[str, Any]] = []
+    tool_rounds: int = 0
+

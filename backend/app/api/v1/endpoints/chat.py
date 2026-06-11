@@ -20,9 +20,12 @@ from fastapi.responses import StreamingResponse
 
 import httpx
 
+from langchain_core.messages import AIMessage, HumanMessage
+
 from app.schemas.chat import (
     ActionRequest,
     ActionResponse,
+    AgentResponse,
     ChatRequest,
     ChatResponse,
 )
@@ -157,6 +160,92 @@ async def run_action(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Could not reach the AI service. Please try again.",
         )
+
+
+# ── Agent endpoint ──────────────────────────────────────────────────────────
+
+@router.post(
+    "/agent",
+    response_model=AgentResponse,
+    summary="Run the LangGraph dual-stage agent (intent routing + grounded synthesis)",
+)
+async def agent_chat(
+    payload: ChatRequest,
+) -> AgentResponse:
+    """
+    Full LangGraph orchestration pipeline:
+
+    1. **Guardrails** — sanitize & validate the user message.
+    2. **Intent Router (Stage 1 LLM)** — decides which tools to call.
+       The LLM may call `database_search` multiple times (different platforms / topics)
+       in a single round, and may loop through up to 5 tool-calling rounds.
+    3. **execute_tools** — runs all tool calls concurrently via asyncio.gather.
+    4. **Synthesis Agent (Stage 2 LLM)** — produces a grounded answer from
+       accumulated context chunks in the brutalist Junior CAO terminal voice.
+
+    Returns the final answer plus the raw source chunks for optional frontend display.
+    """
+    from app.services.agent.guardrails import sanitize_and_validate
+    from app.services.agent.graph import get_compiled_graph
+    from app.core.config import get_settings
+
+    settings = get_settings()
+
+    # Validate we have at least one message
+    if not payload.messages:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="messages array cannot be empty.",
+        )
+
+    # Guardrails — run before touching the graph
+    last_user_content = payload.messages[-1].content
+    sanitized_query   = sanitize_and_validate(last_user_content)
+
+    # Convert frontend ChatMessage list → LangChain message objects
+    lc_messages: list = []
+    for msg in payload.messages:
+        if msg.role.value == "user":
+            lc_messages.append(HumanMessage(content=msg.content))
+        elif msg.role.value == "assistant":
+            lc_messages.append(AIMessage(content=msg.content))
+        # system messages from frontend are intentionally dropped
+
+    # Initial LangGraph state
+    initial_state = {
+        "messages":          lc_messages,
+        "user_query":        sanitized_query,
+        "retrieved_context": [],
+        "tool_calls_made":   0,
+        "tool_error":        None,
+        "final_response":    None,
+    }
+
+    try:
+        graph  = get_compiled_graph()
+        result = await graph.ainvoke(initial_state)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Agent pipeline error: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Agent pipeline failed. Please try again.",
+        )
+
+    reply = result.get("final_response") or "> No response generated."
+    logger.info(
+        "POST /chat/agent — tool_rounds=%d sources=%d",
+        result.get("tool_calls_made", 0),
+        len(result.get("retrieved_context", [])),
+    )
+
+    return AgentResponse(
+        reply=reply,
+        model=settings.OPENROUTER_DEFAULT_MODEL,
+        sources=result.get("retrieved_context", []),
+        tool_rounds=result.get("tool_calls_made", 0),
+    )
 
 
 # ── Error helpers ─────────────────────────────────────────────────────────────

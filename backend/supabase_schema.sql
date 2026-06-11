@@ -109,3 +109,43 @@ TO authenticated
 USING (true);
 
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 6. hybrid_search — called by the LangGraph agent's database_search tool.
+--    Runs cosine similarity search on document_chunks, JOINs raw_documents,
+--    and applies optional platform / status / author filters.
+--    ⚠ Run this in Supabase → SQL Editor before using the /chat/agent endpoint.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION public.hybrid_search(
+    query_embedding  VECTOR(1024),
+    platform_filter  TEXT    DEFAULT NULL,
+    status_filter    TEXT    DEFAULT NULL,
+    author_filter    TEXT    DEFAULT NULL,
+    match_count      INT     DEFAULT 5
+)
+RETURNS TABLE (
+    chunk_text  TEXT,
+    title       TEXT,
+    author      TEXT,
+    platform    TEXT,
+    status      TEXT,
+    created_at  TIMESTAMPTZ,
+    similarity  FLOAT
+)
+LANGUAGE SQL STABLE AS $$
+    SELECT
+        dc.chunk_text,
+        rd.title,
+        rd.author,
+        rd.platform,
+        rd.status,
+        rd.created_at,
+        1 - (dc.embedding <=> query_embedding) AS similarity
+    FROM   public.document_chunks dc
+    JOIN   public.raw_documents   rd ON rd.id = dc.document_id
+    WHERE
+        (platform_filter IS NULL OR rd.platform = platform_filter)
+        AND (status_filter  IS NULL OR rd.status  = status_filter)
+        AND (author_filter  IS NULL OR rd.author  ILIKE '%' || author_filter || '%')
+    ORDER BY dc.embedding <=> query_embedding
+    LIMIT  match_count;
+$$;
