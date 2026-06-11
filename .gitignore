@@ -26,12 +26,19 @@ frontend/build/
 
 # Environments
 .env
+**/.env
+**/.env.*
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
 backend/.env
 frontend/.env*.local
+
+
+# Agents & Skills
+.agents/
+skills-lock.json
 
 # IDEs and Editors
 .vscode/

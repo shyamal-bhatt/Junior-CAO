@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     # Default model slug — can be overridden per-request by the frontend
     OPENROUTER_DEFAULT_MODEL: str = "openai/gpt-4o-mini"
 
+    # ── Nango ────────────────────────────────────────────────────────────────
+    NANGO_SECRET_KEY:      str = ""
+    NANGO_SERVER_URL:      str = "https://api.nango.dev"
+
 
 @lru_cache
 def get_settings() -> Settings:
