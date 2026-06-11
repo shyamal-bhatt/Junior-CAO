@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS public.document_chunks (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     document_id UUID NOT NULL REFERENCES public.raw_documents(id) ON DELETE CASCADE,
     chunk_text TEXT NOT NULL,
-    embedding VECTOR(1536) NOT NULL
+    embedding VECTOR(1024) NOT NULL
 );
 
 -- Index for fast cosine similarity search on the embedding vector
@@ -48,7 +48,7 @@ CREATE OR REPLACE FUNCTION public.insert_document_with_chunks(
     p_project_tag TEXT,
     p_created_at TIMESTAMP WITH TIME ZONE,
     p_chunk_text TEXT,
-    p_embedding VECTOR(1536)
+    p_embedding VECTOR(1024)
 ) RETURNS UUID AS $$
 DECLARE
     v_doc_id UUID;

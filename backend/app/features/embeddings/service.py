@@ -2,70 +2,54 @@
 features/embeddings/service.py
 ───────────────────────────────
 Text embeddings service.
-Generates 1536-dimension vectors using OpenAI's text-embedding-3-small model.
+Generates 1024-dimension vectors locally using the BAAI/bge-large-en-v1.5 model.
 """
 
-import httpx
 from typing import List
-from app.core.config import get_settings
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
-settings = get_settings()
+
+# Global model container for lazy loading
+_model = None
+
+def _get_model():
+    """Lazily loads the local SentenceTransformer model."""
+    global _model
+    if _model is None:
+        logger.info("Initializing local SentenceTransformer model 'BAAI/bge-large-en-v1.5'...")
+        from sentence_transformers import SentenceTransformer
+        # Load local model (downloads on first use)
+        _model = SentenceTransformer('BAAI/bge-large-en-v1.5')
+        logger.info("Local SentenceTransformer model loaded successfully.")
+    return _model
 
 class EmbeddingService:
     """
-    Handles generating text embeddings using OpenAI API.
+    Handles generating text embeddings locally.
     """
-
-    def __init__(self):
-        self.api_url = "https://api.openai.com/v1/embeddings"
-        self.model = "text-embedding-3-small"
-        self.api_key = settings.OPENAI_API_KEY
 
     async def generate_embedding(self, text: str) -> List[float]:
         """
-        Generates a 1536-dimension vector for the input text.
-        Falls back to a mock vector if no OpenAI API key is configured.
+        Generates a 1024-dimension vector for the input text using local BAAI/bge-large-en-v1.5 model.
         """
         if not text:
-            # Return zero vector for empty text
-            vector = [0.0] * 1536
-            logger.info("[EMBEDDING] Text chunk transformed. Vector Shape: (1536,).")
+            vector = [0.0] * 1024
+            logger.info("[EMBEDDING] Text chunk transformed. Vector Shape: (1024,).")
             return vector
 
-        if not self.api_key or self.api_key in ["", "your-openai-api-key-here"]:
-            logger.warning("OPENAI_API_KEY is not configured. Generating a mock vector (1536,) for testing.")
-            # Simple hash-deterministic mock vector generator for consistent testing
-            import hashlib
-            h = hashlib.sha256(text.encode("utf-8")).digest()
-            vector = []
-            for i in range(1536):
-                # Deterministic float between -1.0 and 1.0
-                val = ((h[i % len(h)] * (i + 1)) % 1000) / 500.0 - 1.0
-                vector.append(val)
-            # Ensure the signature logging is executed exactly
-            logger.info("[EMBEDDING] Text chunk transformed. Vector Shape: (1536,).")
-            return vector
+        model = _get_model()
+        
+        # Run encoding (encode handles raw string or list of strings)
+        # We run this in executor if needed, but simple CPU/GPU inference works directly
+        embedding = model.encode(text, normalize_embeddings=True)
+        
+        # Convert numpy array to list of floats
+        vector = [float(x) for x in embedding]
 
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "input": text,
-            "model": self.model,
-        }
-
-        async with httpx.AsyncClient() as client:
-            response = await client.post(self.api_url, headers=headers, json=payload, timeout=30.0)
-            response.raise_for_status()
-            data = response.json()
-            embedding = data["data"][0]["embedding"]
-            
-            # Print exact log statement matching the trace requirement
-            logger.info("[EMBEDDING] Text chunk transformed. Vector Shape: (1536,).")
-            return embedding
+        # Print exact log statement matching the trace requirement
+        logger.info("[EMBEDDING] Text chunk transformed. Vector Shape: (1024,).")
+        return vector
 
 # Singleton instance
 embedding_service = EmbeddingService()
