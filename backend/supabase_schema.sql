@@ -11,6 +11,7 @@ CREATE EXTENSION IF NOT EXISTS vector;
 --   - Google Calendar (Events): title (event summary), body (description), author (organizer), platform='google-calendar'
 CREATE TABLE IF NOT EXISTS public.raw_documents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    external_id TEXT UNIQUE, -- Unique ID from source platform (e.g. github issue id) to prevent duplicates
     title TEXT,
     body TEXT,
     author TEXT,
@@ -31,15 +32,17 @@ CREATE TABLE IF NOT EXISTS public.document_chunks (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     document_id UUID NOT NULL REFERENCES public.raw_documents(id) ON DELETE CASCADE,
     chunk_text TEXT NOT NULL,
-    embedding VECTOR(1536) NOT NULL
+    embedding VECTOR(1024) NOT NULL
 );
 
 -- Index for fast cosine similarity search on the embedding vector
 CREATE INDEX IF NOT EXISTS idx_document_chunks_embedding 
 ON public.document_chunks USING hnsw (embedding vector_cosine_ops);
 
--- Transaction function to save metadata and chunk vector simultaneously in a single transactional step
+-- Transaction function to save metadata and chunk vector simultaneously in a single transactional step.
+-- Uses ON CONFLICT on external_id to update existing documents (UPSERT) and prevent duplicates.
 CREATE OR REPLACE FUNCTION public.insert_document_with_chunks(
+    p_external_id TEXT,
     p_title TEXT,
     p_body TEXT,
     p_author TEXT,
@@ -48,14 +51,23 @@ CREATE OR REPLACE FUNCTION public.insert_document_with_chunks(
     p_project_tag TEXT,
     p_created_at TIMESTAMP WITH TIME ZONE,
     p_chunk_text TEXT,
-    p_embedding VECTOR(1536)
+    p_embedding VECTOR(1024)
 ) RETURNS UUID AS $$
 DECLARE
     v_doc_id UUID;
 BEGIN
-    INSERT INTO public.raw_documents (title, body, author, status, platform, project_tag, created_at)
-    VALUES (p_title, p_body, p_author, p_status, p_platform, p_project_tag, p_created_at)
+    INSERT INTO public.raw_documents (external_id, title, body, author, status, platform, project_tag, created_at)
+    VALUES (p_external_id, p_title, p_body, p_author, p_status, p_platform, p_project_tag, p_created_at)
+    ON CONFLICT (external_id) 
+    DO UPDATE SET 
+        title = EXCLUDED.title,
+        body = EXCLUDED.body,
+        status = EXCLUDED.status,
+        created_at = EXCLUDED.created_at
     RETURNING id INTO v_doc_id;
+
+    -- Delete old chunks for this document to prevent duplicates
+    DELETE FROM public.document_chunks WHERE document_id = v_doc_id;
 
     INSERT INTO public.document_chunks (document_id, chunk_text, embedding)
     VALUES (v_doc_id, p_chunk_text, p_embedding);

@@ -10,6 +10,7 @@ from fastapi import APIRouter, Request, Depends, HTTPException, status
 from app.core.logging import get_logger
 from app.core.supabase import get_supabase_client
 from app.features.embeddings.service import embedding_service
+from app.core.config import get_settings
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/webhooks/nango", tags=["Webhooks"])
@@ -38,8 +39,17 @@ async def handle_nango_global_webhook(request: Request, supabase_client = Depend
         logger.error(f"Failed to parse Nango payload JSON: {e}")
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
+    # If this is a Nango sync notification (meaning it notifies us a sync finished, but does not contain records)
+    webhook_type = payload.get("type")
     provider = payload.get("providerConfigKey") or payload.get("provider")
-    
+    connection_id = payload.get("connectionId")
+    model_name = payload.get("model")
+
+    if webhook_type == "sync" and provider == "github" and connection_id and model_name:
+        logger.info(f"Detected Nango Sync Notification for model '{model_name}'. Fetching actual records from Nango API...")
+        records = await fetch_nango_records(provider, connection_id, model_name)
+        return await process_github_records(records, supabase_client)
+
     if provider == "github":
         response_results = payload.get("responseResults", {})
         records = []
@@ -97,6 +107,33 @@ async def handle_github_webhook(request: Request, supabase_client = Depends(get_
     return await process_github_records(records, supabase_client)
 
 
+async def fetch_nango_records(provider: str, connection_id: str, model_name: str) -> List[Dict[str, Any]]:
+    """
+    Queries Nango's GET /records REST API to fetch actual synced records.
+    """
+    settings = get_settings()
+    url = f"{settings.NANGO_SERVER_URL}/records"
+    headers = {
+        "Authorization": f"Bearer {settings.NANGO_SECRET_KEY}",
+        "connection-id": connection_id,
+        "provider-config-key": provider
+    }
+    params = {
+        "model": model_name
+    }
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers, params=params, timeout=30.0)
+            response.raise_for_status()
+            data = response.json()
+            records = data.get("records", [])
+            logger.info(f"Successfully fetched {len(records)} records from Nango API for model '{model_name}'.")
+            return records
+    except Exception as e:
+        logger.error(f"Failed to fetch records from Nango API: {e}")
+        return []
+
 
 async def process_github_records(records: List[Dict[str, Any]], supabase_client) -> Dict[str, Any]:
     """
@@ -123,18 +160,16 @@ async def process_github_records(records: List[Dict[str, Any]], supabase_client)
     processed_count = 0
 
     for idx, item in enumerate(target_records):
-        # Log the raw keys of the incoming item to inspect structure
-        logger.info(f"[DIAGNOSTIC] Raw Nango item keys: {list(item.keys())}")
-        logger.info(f"[DIAGNOSTIC] Raw Nango item sample: {str(item)[:500]}")
-
         # Extract metadata from Nango GitHub payload
         item_id = str(item.get("id") or f"github-item-{idx}")
+        
+        # Support common keys sent by Nango templates (e.g. description/body, creator/author/login)
         title = item.get("title") or item.get("name") or "Untitled Issue/PR"
         body = item.get("body") or item.get("description") or ""
 
         
         # Extract author
-        author_data = item.get("author") or item.get("user") or {}
+        author_data = item.get("author") or item.get("user") or item.get("creator") or {}
         if isinstance(author_data, dict):
             author = author_data.get("login") or author_data.get("username") or "unknown"
         else:
@@ -180,7 +215,7 @@ async def process_github_records(records: List[Dict[str, Any]], supabase_client)
         # Route normalized text blocks to processing functions in features/embeddings
         embedding = await embedding_service.generate_embedding(body or title)
 
-        # 6. TRANSACTIONAL DATABASE WRITE
+        # 6. TRANSACTIONAL DATABASE WRITE (UPSERT via external_id)
         # Save structural properties to raw_documents and float array to document_chunks simultaneously in a single transaction
         logger.info(
             f"[DATABASE] Writing row to SQL table 'raw_documents' and "
@@ -191,6 +226,7 @@ async def process_github_records(records: List[Dict[str, Any]], supabase_client)
             supabase_client.rpc(
                 "insert_document_with_chunks",
                 {
+                    "p_external_id": item_id,
                     "p_title": title,
                     "p_body": body,
                     "p_author": author,
