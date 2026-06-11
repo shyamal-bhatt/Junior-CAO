@@ -20,13 +20,44 @@ UNTRACKED_FALLBACK_TAG = "Linkmate"
 TRACKED_REPOSITORIES = {"junior-cao", "Junior-CAO"}
 
 
+@router.post("", status_code=status.HTTP_200_OK)
+async def handle_nango_global_webhook(request: Request, supabase_client = Depends(get_supabase_client)):
+    """
+    Global webhook receiver configured as the Webhook URL in Nango dashboard.
+    Dispatches to the correct integration-specific processor based on providerConfigKey.
+    """
+    body_bytes = await request.body()
+    logger.info(f"[RAW INGEST] Received global payload of {len(body_bytes)} bytes from Nango.")
+    
+    if not body_bytes:
+        return {"status": "ignored", "reason": "empty payload"}
+        
+    try:
+        payload = json.loads(body_bytes)
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse Nango payload JSON: {e}")
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    provider = payload.get("providerConfigKey") or payload.get("provider")
+    
+    if provider == "github":
+        # Extract sync results if present, otherwise fallback
+        records = payload.get("responseResults", {}).get("github", []) or payload.get("responseResults", [])
+        if not records:
+            # Fallback to direct records structure
+            records = payload.get("results", payload.get("data", [payload]))
+            
+        return await process_github_records(records, supabase_client)
+    else:
+        logger.warning(f"Webhook received for unsupported provider config key: '{provider}'. Skipping.")
+        return {"status": "ignored", "reason": f"unsupported provider: {provider}"}
+
+
 @router.post("/github", status_code=status.HTTP_200_OK)
 async def handle_github_webhook(request: Request, supabase_client = Depends(get_supabase_client)):
     """
-    Captures inbound webhooks delivered by Nango's background synchronizations.
-    Enforces strict historical processing boundaries to avoid database bloat.
+    Legacy/Direct route for GitHub-only webhooks.
     """
-    # 1. RAW INGESTION LOGGING
     body_bytes = await request.body()
     logger.info(f"[RAW INGEST] Received payload of {len(body_bytes)} bytes from source Nango GitHub.")
 
@@ -44,12 +75,19 @@ async def handle_github_webhook(request: Request, supabase_client = Depends(get_
     if isinstance(payload, list):
         records = payload
     elif isinstance(payload, dict):
-        # Nango sometimes embeds inside a key e.g., 'results' or 'data'
-        records = payload.get("results", payload.get("data", [payload]))
+        records = payload.get("responseResults", {}).get("github", []) or payload.get("responseResults", []) or payload.get("results", payload.get("data", [payload]))
     
+    return await process_github_records(records, supabase_client)
+
+
+async def process_github_records(records: List[Dict[str, Any]], supabase_client) -> Dict[str, Any]:
+    """
+    Helper function to process and insert GitHub records.
+    """
     if not records:
-        logger.info("No records found in Nango payload. Skipping processing.")
+        logger.info("No records found in GitHub payload. Skipping processing.")
         return {"status": "ok", "records_processed": 0}
+
 
     # 2. DATA BOUNDARIES: Restrict syncing to the last 30 active items
     # Sort by updated_at or created_at descending if available, or just keep order
