@@ -11,7 +11,10 @@ To add a new feature:
 
 from fastapi import APIRouter
 from app.api.v1.endpoints import chat
+from app.nango.github.webhooks import router as nango_github_webhook_router
 
 router = APIRouter()
 
 router.include_router(chat.router)
+router.include_router(nango_github_webhook_router)
+

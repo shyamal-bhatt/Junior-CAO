@@ -59,6 +59,8 @@ async def send_message(
         len(payload.messages),
         payload.stream,
     )
+    if payload.messages:
+        logger.info("Received user message: %s", payload.messages[-1].content)
 
     # If the frontend sends stream=true in the body, redirect to streaming
     if payload.stream:
@@ -107,6 +109,8 @@ async def stream_message(
         payload.model,
         len(payload.messages),
     )
+    if payload.messages:
+        logger.info("Received streaming user message: %s", payload.messages[-1].content)
     try:
         return StreamingResponse(
             service.chat_stream(payload),
