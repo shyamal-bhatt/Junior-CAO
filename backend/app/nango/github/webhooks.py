@@ -123,11 +123,15 @@ async def process_github_records(records: List[Dict[str, Any]], supabase_client)
     processed_count = 0
 
     for idx, item in enumerate(target_records):
+        # Log the raw keys of the incoming item to inspect structure
+        logger.info(f"[DIAGNOSTIC] Raw Nango item keys: {list(item.keys())}")
+        logger.info(f"[DIAGNOSTIC] Raw Nango item sample: {str(item)[:500]}")
+
         # Extract metadata from Nango GitHub payload
-        # Payloads from Nango standard templates or raw proxy might differ. We support common mappings:
         item_id = str(item.get("id") or f"github-item-{idx}")
         title = item.get("title") or item.get("name") or "Untitled Issue/PR"
         body = item.get("body") or item.get("description") or ""
+
         
         # Extract author
         author_data = item.get("author") or item.get("user") or {}
