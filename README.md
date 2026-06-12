@@ -141,18 +141,12 @@ graph TD
     Synthesize --> Output([Send Chat Message to UI])
 ```
 
----
+### Decisions, Tradeoffs, and Future Roadmap
 
-### Tradeoffs & Future Improvements
-
-#### Tradeoffs
-- **Local Embedding Computation**: Generating embeddings locally using `BAAI/bge-large-en-v1.5` eliminates external API network hops and costs. However, it incurs significant memory and CPU overhead on the backend host compared to utilizing SaaS embedding endpoints (like OpenAI or Cohere).
-- **Basic Fixed-Size Chunking**: The current chunking logic uses character-based fixed intervals. This is highly performant and easy to implement but sometimes splits semantic boundaries (e.g., sentences, tables), which can dilute matching accuracy.
-- **Relational + Vector Co-location**: Storing both relational data and vector embeddings inside Supabase (PostgreSQL with `pgvector`) simplifies schema management and guarantees transaction integrity. However, it binds scaling limits of the vector storage to the database instance itself.
-
-#### Future Improvements
-- **Semantic/Hierarchical Chunking**: Implement layout-aware parsing for documents and attachments to split chunks along natural document hierarchy boundaries.
-- **Cross-Encoder Re-ranking**: Integrate a local or lightweight hosting-based Cross-Encoder model to re-rank the retrieved results post-RRF, maximizing query relevance.
-- **Context Grounding Guardrails**: Introduce hallucination detection or automated checking to score the LLM output's factual alignment with the retrieved document chunks.
-- **Stateful Conversational Memory**: Persist user preferences and long-term summaries in PostgreSQL to enable personalized agent interactions across chat sessions.
+| Area | Current Setup | Alternative Options | Rationale for Current Choice | Planned Improvement & Impact |
+| :--- | :--- | :--- | :--- | :--- |
+| **Vector Embedding Model** | Local `BAAI/bge-large-en-v1.5` (1024-dim) via `sentence-transformers` | Cloud APIs (OpenAI `text-embedding-3-large`, Cohere) | **Cost & Latency**: Eliminates per-token API billing and guarantees zero external network hops during large ingestion webhooks. | **Hybrid Routing**: Fall back to cloud APIs dynamically under high server load. *Impact*: Decreases local server CPU/memory spikes. |
+| **Data Partitioning (Chunking)** | Fixed-size sliding character chunking | Semantic layout-based, Token-based, or Hierarchical chunking | **Speed & Simplicity**: Fast, high-throughput parsing without requiring complex structural layout engines. | **Semantic Paragraph Parsing**: Split text at natural paragraph or table boundaries. *Impact*: Eliminates split sentences, directly boosting vector matching accuracy. |
+| **Vector Storage Architecture** | Supabase database utilizing the `pgvector` extension | Dedicated Vector Databases (Pinecone, Qdrant, Milvus) | **Relational Co-location**: Permits transactional updates, direct JOINs, and unified Row Level Security (RLS) policies on one engine. | **Index Parameter Tuning**: Fine-tune `m` and `ef_construction` values for HNSW. *Impact*: Retains sub-millisecond retrieval speeds as scale increases. |
+| **Search & Retrieval Strategy** | Reciprocal Rank Fusion (RRF) merging Cosine HNSW Similarity and GIN Full-Text Search | Pure Vector Search, BM25-only search, or Cross-Encoder Re-ranking | **Robustness**: RRF compensates for vector vocabulary mismatch by combining dense query semantics with exact keywords. | **Cross-Encoder Re-ranking**: Inject a lightweight Cross-Encoder model to re-score the top-k results. *Impact*: Maximizes LLM answer accuracy by feeding only the most relevant snippets. |
 
