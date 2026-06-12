@@ -49,7 +49,8 @@ async def trigger_sync():
                         url_trigger = f"{settings.NANGO_SERVER_URL}/sync/trigger"
                         trigger_payload = {
                             "provider_config_key": provider,
-                            "connection_id": conn_id
+                            "connection_id": conn_id,
+                            "syncs": []
                         }
                         
                         trigger_res = await client.post(url_trigger, headers=headers, json=trigger_payload)

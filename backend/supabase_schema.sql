@@ -189,7 +189,7 @@ CREATE OR REPLACE FUNCTION public.clear_all_documents()
 RETURNS VOID
 LANGUAGE plpgsql SECURITY DEFINER AS $$
 BEGIN
-    DELETE FROM public.raw_documents;
+    DELETE FROM public.raw_documents WHERE id IS NOT NULL;
 END;
 $$;
 
