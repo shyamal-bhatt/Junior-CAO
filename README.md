@@ -140,3 +140,19 @@ graph TD
     DirectReply --> Synthesize[Synthesize Grounded Response]
     Synthesize --> Output([Send Chat Message to UI])
 ```
+
+---
+
+### Tradeoffs & Future Improvements
+
+#### Tradeoffs
+- **Local Embedding Computation**: Generating embeddings locally using `BAAI/bge-large-en-v1.5` eliminates external API network hops and costs. However, it incurs significant memory and CPU overhead on the backend host compared to utilizing SaaS embedding endpoints (like OpenAI or Cohere).
+- **Basic Fixed-Size Chunking**: The current chunking logic uses character-based fixed intervals. This is highly performant and easy to implement but sometimes splits semantic boundaries (e.g., sentences, tables), which can dilute matching accuracy.
+- **Relational + Vector Co-location**: Storing both relational data and vector embeddings inside Supabase (PostgreSQL with `pgvector`) simplifies schema management and guarantees transaction integrity. However, it binds scaling limits of the vector storage to the database instance itself.
+
+#### Future Improvements
+- **Semantic/Hierarchical Chunking**: Implement layout-aware parsing for documents and attachments to split chunks along natural document hierarchy boundaries.
+- **Cross-Encoder Re-ranking**: Integrate a local or lightweight hosting-based Cross-Encoder model to re-rank the retrieved results post-RRF, maximizing query relevance.
+- **Context Grounding Guardrails**: Introduce hallucination detection or automated checking to score the LLM output's factual alignment with the retrieved document chunks.
+- **Stateful Conversational Memory**: Persist user preferences and long-term summaries in PostgreSQL to enable personalized agent interactions across chat sessions.
+
