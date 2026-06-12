@@ -15,6 +15,7 @@ The LangGraph execute_tools node calls this function directly — never the LLM.
 """
 
 import asyncio
+import time
 import logging
 
 # pyrefly: ignore [missing-import]
@@ -91,18 +92,28 @@ async def database_search(
     list[dict]  Each dict has: chunk_text, title, author, platform, status,
                 created_at (ISO string), similarity (0–1 float).
     """
-    logger.info(
-        "database_search: query=%r platform=%s status=%s author=%s top_k=%d",
-        query, platform, status_filter, author_filter, top_k,
-    )
-
-    # Normalize "any" → None so SQL WHERE clause is skipped
     platform_arg = None if platform == "any" else platform
 
-    # 1. Embed query (CPU-bound — run in thread pool)
-    embedding = await asyncio.to_thread(_embed_sync, query)
+    logger.info(
+        "[EMBEDDING] START  query=%r  platform=%s  status=%s  author=%s  top_k=%d",
+        query, platform, status_filter or "—", author_filter or "—", top_k,
+    )
 
-    # 2. Vector search (I/O-bound sync client — run in thread pool)
+    # 1. Embed query
+    t0 = time.perf_counter()
+    embedding = await asyncio.to_thread(_embed_sync, query)
+    embed_ms = int((time.perf_counter() - t0) * 1000)
+    logger.info(
+        "[EMBEDDING] DONE   %d-dim vector generated in %dms",
+        len(embedding), embed_ms,
+    )
+
+    # 2. Supabase RPC
+    logger.info(
+        "[DATABASE] hybrid_search RPC  platform_filter=%s  status_filter=%s  author_filter=%s  match_count=%d",
+        platform_arg or "(all)", status_filter or "(all)", author_filter or "(all)", min(top_k, 15),
+    )
+    t1 = time.perf_counter()
     results = await asyncio.to_thread(
         _rpc_sync,
         embedding,
@@ -111,6 +122,15 @@ async def database_search(
         author_filter,
         top_k,
     )
+    rpc_ms = int((time.perf_counter() - t1) * 1000)
 
-    logger.info("database_search: returned %d results", len(results))
+    if results:
+        sims = [r.get("similarity", 0) for r in results]
+        logger.info(
+            "[DATABASE] RPC returned %d rows in %dms  |  sim range: %.3f – %.3f",
+            len(results), rpc_ms, min(sims), max(sims),
+        )
+    else:
+        logger.info("[DATABASE] RPC returned 0 rows in %dms (no matches)", rpc_ms)
+
     return results

@@ -51,6 +51,15 @@ class Settings(BaseSettings):
     SUPABASE_URL:          str = ""
     SUPABASE_KEY:          str = ""
 
+    # ── LangSmith (optional — live trace visualizer) ──────────────────────────
+    # Sign up free at https://smith.langchain.com, grab an API key, then add:
+    #   LANGCHAIN_TRACING_V2=true
+    #   LANGCHAIN_API_KEY=ls__...
+    #   LANGCHAIN_PROJECT=junior-cao
+    # to your .env.  No code changes needed — LangGraph auto-detects these vars.
+    LANGCHAIN_TRACING_V2:  bool = False
+    LANGCHAIN_API_KEY:     str  = ""
+    LANGCHAIN_PROJECT:     str  = "junior-cao"
 
 @lru_cache
 def get_settings() -> Settings:

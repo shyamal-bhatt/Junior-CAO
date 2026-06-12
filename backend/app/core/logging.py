@@ -116,8 +116,20 @@ def _build_root_logger() -> logging.Logger:
     root.addHandler(console_handler)
 
     # Silence noisy third-party loggers at WARNING level so our logs aren't drowned
-    for noisy in ("uvicorn.access", "httpx", "httpcore"):
+    for noisy in (
+        "uvicorn.access",
+        "httpx",
+        "httpcore",
+        "langchain",
+        "langchain_core",
+        "langchain_openai",
+        "langgraph",
+        "openai",
+        "sentence_transformers",
+        "transformers",
+    ):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+
 
     return root
 

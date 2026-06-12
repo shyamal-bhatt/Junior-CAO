@@ -27,6 +27,7 @@ The compiled graph is a singleton — use get_compiled_graph() everywhere.
 
 import asyncio
 import json
+import time
 
 from langchain_core.messages import (
     AIMessage,
@@ -51,6 +52,11 @@ settings = get_settings()
 
 # Maximum tool-calling rounds before forcing synthesis
 MAX_TOOL_ROUNDS = 5
+
+# Visual dividers for the trace logs — easier to spot boundaries in the terminal
+_DIV  = "─" * 64
+_DIV2 = "═" * 64
+
 
 # ── LLM factory ──────────────────────────────────────────────────────────────
 
@@ -95,6 +101,11 @@ def _format_context(chunks: list[dict]) -> str:
     return "\n\n---\n\n".join(parts)
 
 
+def _truncate(text: str, n: int = 120) -> str:
+    """Truncate a string to n chars for log readability."""
+    return text[:n] + "…" if len(text) > n else text
+
+
 # ── Graph node functions ───────────────────────────────────────────────────────
 
 async def _intent_router_node(state: AgentState, llm_router: ChatOpenAI) -> dict:
@@ -103,19 +114,55 @@ async def _intent_router_node(state: AgentState, llm_router: ChatOpenAI) -> dict
     Calls the LLM with tool_choice='required' so it MUST output tool calls.
     Returns the AI message (with tool_calls) to be appended to state.messages.
     """
+    round_num = state["tool_calls_made"] + 1
+
+    # ── ENTER log ─────────────────────────────────────────────────────────────
+    logger.info(_DIV2)
     logger.info(
-        "intent_router: round=%d messages=%d",
-        state["tool_calls_made"],
-        len(state["messages"]),
+        "[ROUTING] STAGE 1 — Intent Router  |  Round %d / %d",
+        round_num, MAX_TOOL_ROUNDS,
     )
+    logger.info(_DIV2)
+    logger.info("[ROUTING] Model          : %s", settings.OPENROUTER_DEFAULT_MODEL)
+    logger.info("[ROUTING] Context window : %d messages in state", len(state["messages"]))
+    logger.info("[ROUTING] User query     : %s", _truncate(state["user_query"]))
+    logger.info(
+        "[ROUTING] System prompt  : %s",
+        _truncate(INTENT_ROUTER_PROMPT.strip(), 200),
+    )
+    logger.info("[ROUTING] Tools offered  : %s", [t["function"]["name"] for t in TOOL_SCHEMAS])
+
+    # Log the last few messages being sent for full context visibility
+    logger.debug("[ROUTING] Full message history sent to LLM:")
+    for i, msg in enumerate(state["messages"][-5:], 1):   # last 5 messages
+        role    = getattr(msg, "type", "?")
+        content = _truncate(str(getattr(msg, "content", "")), 200)
+        logger.debug("[ROUTING]   [%d] %s: %s", i, role, content)
+
+    # ── LLM call ──────────────────────────────────────────────────────────────
+    t0 = time.perf_counter()
     system_msg = SystemMessage(content=INTENT_ROUTER_PROMPT)
     response: AIMessage = await llm_router.ainvoke(
         [system_msg, *state["messages"]]
     )
-    logger.debug(
-        "intent_router: tool_calls=%s",
-        [tc["name"] for tc in (response.tool_calls or [])],
-    )
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
+
+    # ── RESPONSE log ──────────────────────────────────────────────────────────
+    tool_calls = response.tool_calls or []
+    logger.info("[ROUTING] ← LLM responded in %dms", elapsed_ms)
+    logger.info("[ROUTING] Tool calls decided: %d", len(tool_calls))
+    for i, tc in enumerate(tool_calls, 1):
+        args_str = json.dumps(tc.get("args", {}), ensure_ascii=False)
+        logger.info(
+            "[ROUTING]   [%d] %s(%s)",
+            i, tc["name"], _truncate(args_str, 160),
+        )
+
+    if not tool_calls:
+        logger.warning("[ROUTING] ⚠ LLM returned no tool calls (unexpected with tool_choice=required)")
+
+    logger.info(_DIV)
+
     return {"messages": [response]}
 
 
@@ -131,20 +178,36 @@ async def _execute_tools_node(state: AgentState) -> dict:
     """
     last_msg: AIMessage = state["messages"][-1]
     tool_calls = last_msg.tool_calls or []
-
-    # Filter to only the real executable tools
     search_calls = [tc for tc in tool_calls if tc["name"] == "database_search"]
 
+    # ── ENTER log ─────────────────────────────────────────────────────────────
+    logger.info(_DIV2)
     logger.info(
-        "execute_tools: %d database_search call(s) this round",
-        len(search_calls),
+        "[DATABASE] EXECUTE TOOLS  |  Round %d  |  %d database_search call(s)",
+        state["tool_calls_made"] + 1, len(search_calls),
     )
+    logger.info(_DIV2)
+    for i, tc in enumerate(search_calls, 1):
+        args = tc.get("args", {})
+        logger.info(
+            "[DATABASE]   Call [%d]  query=%r  platform=%s  status=%s  author=%s  top_k=%s",
+            i,
+            args.get("query", ""),
+            args.get("platform", "any"),
+            args.get("status_filter", "—"),
+            args.get("author_filter", "—"),
+            args.get("top_k", 5),
+        )
 
-    # ── Run all database_search calls concurrently ────────────────────────────
-    async def _run_one(tc: dict) -> tuple[str, list[dict], str | None]:
+    if not search_calls:
+        logger.info("[DATABASE]   (no database_search calls to execute)")
+
+    # ── Run all calls concurrently ─────────────────────────────────────────────
+    async def _run_one(tc: dict, call_index: int) -> tuple[str, list[dict], str | None]:
         """Returns (tool_call_id, results, error_str_or_None)."""
         call_id = tc["id"]
-        args    = tc["args"]  # already parsed dict from langchain
+        args    = tc["args"]
+        t0      = time.perf_counter()
         try:
             results = await database_search(
                 query         = args.get("query", ""),
@@ -153,14 +216,37 @@ async def _execute_tools_node(state: AgentState) -> dict:
                 author_filter = args.get("author_filter"),
                 top_k         = int(args.get("top_k", 5)),
             )
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            logger.info(
+                "[DATABASE]   Call [%d] ✓  %d results in %dms",
+                call_index, len(results), elapsed_ms,
+            )
+            if results:
+                for j, r in enumerate(results[:3], 1):  # preview top 3
+                    sim = r.get("similarity")
+                    sim_str = f"{sim:.3f}" if sim is not None else "n/a"
+                    logger.info(
+                        "[DATABASE]     [%d.%d] sim=%s | %s | %s | %s",
+                        call_index, j,
+                        sim_str,
+                        (r.get("platform") or "?").upper(),
+                        _truncate(r.get("title") or "Untitled", 50),
+                        _truncate(r.get("chunk_text") or "", 80),
+                    )
             return (call_id, results, None)
         except Exception as exc:
-            logger.error("database_search failed for call %s: %s", call_id, exc)
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            logger.error(
+                "[DATABASE]   Call [%d] ✗  FAILED in %dms: %s",
+                call_index, elapsed_ms, exc,
+            )
             return (call_id, [], str(exc))
 
-    gathered = await asyncio.gather(*[_run_one(tc) for tc in search_calls])
+    gathered = await asyncio.gather(
+        *[_run_one(tc, i) for i, tc in enumerate(search_calls, 1)]
+    )
 
-    # ── Build ToolMessages and accumulate context ────────────────────────────
+    # ── Build ToolMessages and accumulate context ─────────────────────────────
     tool_messages: list[ToolMessage] = []
     new_context:   list[dict]        = []
     last_error:    str | None        = None
@@ -171,7 +257,6 @@ async def _execute_tools_node(state: AgentState) -> dict:
             content    = f"Tool error: {error}. No results returned."
         elif results:
             new_context.extend(results)
-            # Send a brief preview so the router can decide if more queries are needed
             preview = results[0]["chunk_text"][:200] if results[0].get("chunk_text") else ""
             content = (
                 f"Retrieved {len(results)} result(s). "
@@ -184,8 +269,7 @@ async def _execute_tools_node(state: AgentState) -> dict:
             ToolMessage(content=content, tool_call_id=call_id)
         )
 
-    # Also emit ToolMessages for any no_tool_needed calls
-    # (required by OpenAI API — every tool_call_id must have a ToolMessage)
+    # Emit ToolMessages for no_tool_needed calls (OpenAI API requires it)
     for tc in tool_calls:
         if tc["name"] == "no_tool_needed":
             tool_messages.append(
@@ -195,9 +279,16 @@ async def _execute_tools_node(state: AgentState) -> dict:
                 )
             )
 
+    total_chunks_so_far = len(state["retrieved_context"]) + len(new_context)
+    logger.info(
+        "[DATABASE] Round complete — new chunks: %d | total accumulated: %d",
+        len(new_context), total_chunks_so_far,
+    )
+    logger.info(_DIV)
+
     return {
         "messages":          tool_messages,
-        "retrieved_context": new_context,           # accumulated by _accumulate reducer
+        "retrieved_context": new_context,
         "tool_calls_made":   state["tool_calls_made"] + 1,
         "tool_error":        last_error,
     }
@@ -209,23 +300,57 @@ async def _synthesis_node(state: AgentState, llm_synth: ChatOpenAI) -> dict:
     Receives the original query + all accumulated context chunks.
     Returns the final answer string in Junior CAO brutalist terminal voice.
     """
-    context_text = _format_context(state["retrieved_context"])
-    logger.info(
-        "synthesis: query=%r context_chunks=%d tool_rounds=%d",
-        state["user_query"][:60],
-        len(state["retrieved_context"]),
-        state["tool_calls_made"],
-    )
+    chunks = state["retrieved_context"]
 
-    system_msg = SystemMessage(content=SYNTHESIS_PROMPT)
+    # ── ENTER log ─────────────────────────────────────────────────────────────
+    logger.info(_DIV2)
+    logger.info(
+        "[PIPELINE START] STAGE 2 — Synthesis Agent  |  %d tool rounds  |  %d context chunks",
+        state["tool_calls_made"], len(chunks),
+    )
+    logger.info(_DIV2)
+    logger.info("[PIPELINE START] Model       : %s", settings.OPENROUTER_DEFAULT_MODEL)
+    logger.info("[PIPELINE START] User query  : %s", _truncate(state["user_query"]))
+    logger.info(
+        "[PIPELINE START] System prompt: %s",
+        _truncate(SYNTHESIS_PROMPT.strip(), 200),
+    )
+    logger.info("[PIPELINE START] Context chunks being passed to LLM:")
+    if chunks:
+        for i, chunk in enumerate(chunks, 1):
+            sim = chunk.get("similarity")
+            logger.info(
+                "[PIPELINE START]   [%d] sim=%-5s | %-12s | %-40s | %s",
+                i,
+                f"{sim:.3f}" if sim is not None else "n/a",
+                (chunk.get("platform") or "?").upper(),
+                _truncate(chunk.get("title") or "Untitled", 40),
+                _truncate(chunk.get("chunk_text") or "", 80),
+            )
+    else:
+        logger.info("[PIPELINE START]   (none — no_tool_needed was chosen)")
+
+    # ── LLM call ──────────────────────────────────────────────────────────────
+    context_text = _format_context(chunks)
     human_content = (
         f"User question: {state['user_query']}\n\n"
-        f"Retrieved context ({len(state['retrieved_context'])} chunk(s)):\n\n"
+        f"Retrieved context ({len(chunks)} chunk(s)):\n\n"
         f"{context_text}"
     )
+    logger.debug("[PIPELINE START] Full human message to synthesis LLM:\n%s", human_content)
+
+    t0 = time.perf_counter()
+    system_msg = SystemMessage(content=SYNTHESIS_PROMPT)
     response: AIMessage = await llm_synth.ainvoke(
         [system_msg, HumanMessage(content=human_content)]
     )
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
+
+    # ── RESPONSE log ──────────────────────────────────────────────────────────
+    logger.info("[PIPELINE COMPLETE] ← Synthesis LLM responded in %dms", elapsed_ms)
+    logger.info("[PIPELINE COMPLETE] Final answer:\n%s", response.content)
+    logger.info(_DIV2)
+
     return {"final_response": response.content}
 
 
@@ -245,21 +370,29 @@ def _should_continue(state: AgentState) -> str:
     """
     # Safety cap — never spin forever
     if state["tool_calls_made"] >= MAX_TOOL_ROUNDS:
-        logger.warning("Max tool rounds reached — forcing synthesis")
+        logger.warning(
+            "[ROUTING] ⚠ MAX_TOOL_ROUNDS (%d) reached — forcing synthesis", MAX_TOOL_ROUNDS
+        )
         return "synthesis"
 
     last_msg = state["messages"][-1]
 
-    # No tool_calls attribute (shouldn't happen) → synthesis
+    # No tool_calls attribute → synthesis
     if not hasattr(last_msg, "tool_calls") or not last_msg.tool_calls:
+        logger.info("[ROUTING] → No tool calls in response — routing to SYNTHESIS")
         return "synthesis"
 
     # no_tool_needed present → done searching
     for tc in last_msg.tool_calls:
         if tc["name"] == "no_tool_needed":
-            logger.info("intent_router chose no_tool_needed — routing to synthesis")
+            reason = tc.get("args", {}).get("reason", "")
+            logger.info(
+                "[ROUTING] → no_tool_needed called (reason: %s) — routing to SYNTHESIS",
+                _truncate(reason, 80),
+            )
             return "synthesis"
 
+    logger.info("[ROUTING] → database_search call(s) detected — routing to EXECUTE TOOLS")
     return "tools"
 
 
@@ -267,25 +400,21 @@ def _should_continue(state: AgentState) -> str:
 
 def _build_graph():
     """Construct and compile the LangGraph state machine."""
-    # Build LLMs
     llm        = _make_llm()
     llm_router = llm.bind_tools(TOOL_SCHEMAS, tool_choice="required")
-    llm_synth  = llm  # same model, no tools bound
+    llm_synth  = llm
 
-    # Partially apply LLMs into node functions (closures)
     async def intent_router_node(state: AgentState) -> dict:
         return await _intent_router_node(state, llm_router)
 
     async def synthesis_node(state: AgentState) -> dict:
         return await _synthesis_node(state, llm_synth)
 
-    # Build graph
     graph = StateGraph(AgentState)
     graph.add_node("intent_router", intent_router_node)
     graph.add_node("execute_tools", _execute_tools_node)
     graph.add_node("synthesis_agent", synthesis_node)
 
-    # Edges
     graph.set_entry_point("intent_router")
     graph.add_conditional_edges(
         "intent_router",
@@ -295,7 +424,6 @@ def _build_graph():
             "synthesis": "synthesis_agent",
         },
     )
-    # After tool execution always loop back to intent_router
     graph.add_edge("execute_tools", "intent_router")
     graph.add_edge("synthesis_agent", END)
 
