@@ -14,6 +14,14 @@ Junior CAO is a high-performance, feature-focused Assistant Chat Overlay applica
 
 ---
 
+### Connected Data Sources
+The RAG pipeline ingests and synchronizes context from the following workspace sources:
+- **GitHub**: Code repositories, issue trackers, pull requests, and commit logs.
+- **Gmail**: Inbound and outbound emails, thread context, and parsed file attachments (PDFs and Excel spreadsheets).
+- **Google Calendar**: Planned meetings, schedule details, participants, and event descriptions.
+
+---
+
 ### System Architecture & Data Flow
 
 #### 1. Nango to Supabase Data Flow (Ingestion & Normalization)
