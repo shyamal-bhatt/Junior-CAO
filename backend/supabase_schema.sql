@@ -133,7 +133,8 @@ RETURNS TABLE (
     created_at  TIMESTAMPTZ,
     similarity  FLOAT,
     body        TEXT,
-    external_id TEXT
+    external_id TEXT,
+    project_tag TEXT
 )
 LANGUAGE plpgsql SECURITY DEFINER STABLE AS $$
 BEGIN
@@ -148,7 +149,8 @@ BEGIN
             rd.created_at,
             1.0 - (dc.embedding <=> query_embedding) AS similarity,
             rd.body,
-            rd.external_id
+            rd.external_id,
+            rd.project_tag
         FROM   public.document_chunks dc
         JOIN   public.raw_documents   rd ON rd.id = dc.document_id
         WHERE
@@ -169,7 +171,8 @@ BEGIN
             rd.created_at,
             1.0 - (dc.embedding <=> query_embedding) AS similarity,
             rd.body,
-            rd.external_id
+            rd.external_id,
+            rd.project_tag
         FROM   public.document_chunks dc
         JOIN   public.raw_documents   rd ON rd.id = dc.document_id
         WHERE
