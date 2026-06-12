@@ -119,10 +119,16 @@ def _format_context(chunks: list[dict]) -> str:
         
         url_label = f" | citation_url: {citation_url}" if citation_url else ""
 
+        text_content = text
+        body_content = body or text
+        if is_mock:
+            text_content = f"⚠️ [MOCK DATA CONTENT]\n{text}\n⚠️ [END MOCK DATA CONTENT]"
+            body_content = f"⚠️ [MOCK DATA CONTENT]\n{body or text}\n⚠️ [END MOCK DATA CONTENT]"
+
         parts.append(
             f"[{i}] {platform.upper()} | {title} | by {author} | {created_at}{sim_label}{url_label}{mock_label}\n"
-            f"--- RELEVANT CHUNK TEXT ---\n{text}\n"
-            f"--- FULL CONTENT / DETAILS ---\n{body or text}"
+            f"--- RELEVANT CHUNK TEXT ---\n{text_content}\n"
+            f"--- FULL CONTENT / DETAILS ---\n{body_content}"
         )
 
     return "\n\n---\n\n".join(parts)

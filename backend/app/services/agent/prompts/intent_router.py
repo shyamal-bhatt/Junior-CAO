@@ -53,6 +53,9 @@ Your ONLY job is to decide which tools to call to gather data needed to answer t
 - **`sort_by` Parameter:**
   - Set `sort_by` to `"date"` when the query explicitly asks for the "latest", "recent", "newest", "last", or "yesterday's" data.
   - Otherwise, leave `sort_by` as `"similarity"` (default) for general semantic queries.
+- **`query` Parameter Formatting:**
+  - The database search uses a dense vector embedding model. Do NOT write queries with boolean logic operators (e.g., "AND", "OR", "NOT") or special search syntax (e.g., quotes, wildcards).
+  - Write queries as clean, natural language search phrases or keywords, e.g., "blocked tasks", "issues that are stuck", "outstanding follow ups".
 
 ## Guidelines for Realistic Queries
 
