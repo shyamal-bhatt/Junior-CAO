@@ -226,20 +226,8 @@ async def process_github_records(records: List[Dict[str, Any]], supabase_client)
         elif isinstance(repo_data, str):
             repo_name = repo_data
 
-        # 3. Handle Untracked Repositories & Map project tag
-        # If repo is not in tracked list, map its title to match the project_tag (e.g. 'Linkmate')
-        is_tracked = False
-        for tracked in TRACKED_REPOSITORIES:
-            if tracked.lower() in repo_name.lower():
-                is_tracked = True
-                break
-
-        if is_tracked:
-            project_tag = TRACKED_PROJECT_TAG
-        else:
-            project_tag = UNTRACKED_FALLBACK_TAG
-            # Map title to match corresponding project_tag (e.g., prefix or override title)
-            title = f"[{UNTRACKED_FALLBACK_TAG}] {title}"
+        # Use actual repository name as the project tag directly
+        project_tag = repo_name if repo_name else "github"
 
         platform = "github"
         body_length = len(body)

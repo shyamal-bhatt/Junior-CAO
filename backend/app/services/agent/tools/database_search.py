@@ -52,6 +52,8 @@ def _rpc_sync(
     platform: str | None,
     status_filter: str | None,
     author_filter: str | None,
+    project_tag_filter: str | None,
+    sort_by: str,
     top_k: int,
 ) -> list[dict]:
     """Synchronous Supabase RPC call — runs in a thread pool."""
@@ -59,11 +61,13 @@ def _rpc_sync(
     response = client.rpc(
         "hybrid_search",
         {
-            "query_embedding": embedding,
-            "platform_filter": platform,
-            "status_filter":   status_filter,
-            "author_filter":   author_filter,
-            "match_count":     min(top_k, 15),  # hard cap at 15
+            "query_embedding":    embedding,
+            "platform_filter":    platform,
+            "status_filter":      status_filter,
+            "author_filter":      author_filter,
+            "project_tag_filter": project_tag_filter,
+            "sort_by":            sort_by,
+            "match_count":        min(top_k, 15),  # hard cap at 15
         },
     ).execute()
     return response.data or []
@@ -132,6 +136,8 @@ async def database_search(
     platform:      str = "any",
     status_filter: str | None = None,
     author_filter: str | None = None,
+    project_tag:   str | None = None,
+    sort_by:       str = "similarity",
     top_k:         int = 5,
 ) -> list[dict]:
     """
@@ -143,6 +149,8 @@ async def database_search(
     platform      One of: 'github', 'gmail', 'google-calendar', 'any'.
     status_filter Optional document status filter (open/closed/read/unread/etc.).
     author_filter Optional author name fragment (case-insensitive ILIKE).
+    project_tag   Optional project tag or repository name (e.g. 'Junior-CAO').
+    sort_by       Ordering logic: 'similarity' (default) or 'date' (for chronological).
     top_k         Maximum results to return (capped at 15).
 
     Returns
@@ -154,8 +162,8 @@ async def database_search(
     platform_arg = None if platform == "any" else platform
 
     logger.info(
-        "[EMBEDDING] START  query=%r  platform=%s  status=%s  author=%s  top_k=%d",
-        query, platform, status_filter or "—", author_filter or "—", top_k,
+        "[EMBEDDING] START  query=%r  platform=%s  status=%s  author=%s  project_tag=%s  sort_by=%s  top_k=%d",
+        query, platform, status_filter or "—", author_filter or "—", project_tag or "—", sort_by, top_k,
     )
 
     # 1. Embed query
@@ -169,8 +177,8 @@ async def database_search(
 
     # 2. Supabase RPC
     logger.info(
-        "[DATABASE] hybrid_search RPC  platform_filter=%s  status_filter=%s  author_filter=%s  match_count=%d",
-        platform_arg or "(all)", status_filter or "(all)", author_filter or "(all)", min(top_k, 15),
+        "[DATABASE] hybrid_search RPC  platform_filter=%s  status_filter=%s  author_filter=%s  project_tag_filter=%s  sort_by=%s  match_count=%d",
+        platform_arg or "(all)", status_filter or "(all)", author_filter or "(all)", project_tag or "(all)", sort_by, min(top_k, 15),
     )
     t1 = time.perf_counter()
     results = await asyncio.to_thread(
@@ -179,6 +187,8 @@ async def database_search(
         platform_arg,
         status_filter,
         author_filter,
+        project_tag,
+        sort_by,
         top_k,
     )
     rpc_ms = int((time.perf_counter() - t1) * 1000)

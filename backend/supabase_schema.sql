@@ -111,16 +111,18 @@ USING (true);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 6. hybrid_search — called by the LangGraph agent's database_search tool.
---    Runs cosine similarity search on document_chunks, JOINs raw_documents,
---    and applies optional platform / status / author filters.
---    ⚠ Run this in Supabase → SQL Editor before using the /chat/agent endpoint.
+--    Runs cosine similarity search or date-based search on document_chunks,
+--    JOINs raw_documents, and applies optional platform / status / author / project filters.
+--    Supports sort_by: 'similarity' or 'date'.
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE FUNCTION public.hybrid_search(
-    query_embedding  VECTOR(1024),
-    platform_filter  TEXT    DEFAULT NULL,
-    status_filter    TEXT    DEFAULT NULL,
-    author_filter    TEXT    DEFAULT NULL,
-    match_count      INT     DEFAULT 5
+    query_embedding    VECTOR(1024),
+    platform_filter    TEXT    DEFAULT NULL,
+    status_filter      TEXT    DEFAULT NULL,
+    author_filter      TEXT    DEFAULT NULL,
+    project_tag_filter TEXT    DEFAULT NULL,
+    sort_by            TEXT    DEFAULT 'similarity',
+    match_count        INT     DEFAULT 5
 )
 RETURNS TABLE (
     chunk_text  TEXT,
@@ -133,28 +135,63 @@ RETURNS TABLE (
     body        TEXT,
     external_id TEXT
 )
-LANGUAGE SQL SECURITY DEFINER STABLE AS $$
-    SELECT
-        dc.chunk_text,
-        rd.title,
-        rd.author,
-        rd.platform,
-        rd.status,
-        rd.created_at,
-        1 - (dc.embedding <=> query_embedding) AS similarity,
-        rd.body,
-        rd.external_id
-    FROM   public.document_chunks dc
-    JOIN   public.raw_documents   rd ON rd.id = dc.document_id
-    WHERE
-        (platform_filter IS NULL OR rd.platform = platform_filter)
-        AND (status_filter  IS NULL OR rd.status  = status_filter)
-        AND (author_filter  IS NULL OR rd.author  ILIKE '%' || author_filter || '%')
-    ORDER BY dc.embedding <=> query_embedding
-    LIMIT  match_count;
+LANGUAGE plpgsql SECURITY DEFINER STABLE AS $$
+BEGIN
+    IF sort_by = 'date' THEN
+        RETURN QUERY
+        SELECT
+            dc.chunk_text,
+            rd.title,
+            rd.author,
+            rd.platform,
+            rd.status,
+            rd.created_at,
+            1.0 - (dc.embedding <=> query_embedding) AS similarity,
+            rd.body,
+            rd.external_id
+        FROM   public.document_chunks dc
+        JOIN   public.raw_documents   rd ON rd.id = dc.document_id
+        WHERE
+            (platform_filter IS NULL OR rd.platform = platform_filter)
+            AND (status_filter  IS NULL OR rd.status  = status_filter)
+            AND (author_filter  IS NULL OR rd.author  ILIKE '%' || author_filter || '%')
+            AND (project_tag_filter IS NULL OR rd.project_tag = project_tag_filter)
+        ORDER BY rd.created_at DESC NULLS LAST
+        LIMIT  match_count;
+    ELSE
+        RETURN QUERY
+        SELECT
+            dc.chunk_text,
+            rd.title,
+            rd.author,
+            rd.platform,
+            rd.status,
+            rd.created_at,
+            1.0 - (dc.embedding <=> query_embedding) AS similarity,
+            rd.body,
+            rd.external_id
+        FROM   public.document_chunks dc
+        JOIN   public.raw_documents   rd ON rd.id = dc.document_id
+        WHERE
+            (platform_filter IS NULL OR rd.platform = platform_filter)
+            AND (status_filter  IS NULL OR rd.status  = status_filter)
+            AND (author_filter  IS NULL OR rd.author  ILIKE '%' || author_filter || '%')
+            AND (project_tag_filter IS NULL OR rd.project_tag = project_tag_filter)
+        ORDER BY dc.embedding <=> query_embedding
+        LIMIT  match_count;
+    END IF;
+END;
 $$;
 
 
+-- Helper function to clear all raw documents and chunks for cleanup.
+CREATE OR REPLACE FUNCTION public.clear_all_documents()
+RETURNS VOID
+LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+    DELETE FROM public.raw_documents;
+END;
+$$;
 
 
 -- 7. Chat sessions and messages tables for conversation history persistence.

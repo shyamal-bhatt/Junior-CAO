@@ -85,7 +85,7 @@ async def process_google_calendar_records(records: List[Dict[str, Any]], supabas
                     "p_author": author,
                     "p_status": status_val,
                     "p_platform": platform,
-                    "p_project_tag": TRACKED_PROJECT_TAG,
+                    "p_project_tag": "google-calendar",
                     "p_created_at": created_at,
                     "p_chunk_text": body[:1000] if body else title,
                     "p_embedding": embedding

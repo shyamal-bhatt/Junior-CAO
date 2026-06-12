@@ -64,6 +64,22 @@ TOOL_SCHEMAS: list[dict] = [
                             "Case-insensitive partial match."
                         ),
                     },
+                    "project_tag": {
+                        "type": "string",
+                        "description": (
+                            "Optional. Filter by project name or repository name (e.g. 'Junior-CAO' or 'linkmate'). "
+                            "Do NOT assume or force this tag unless the user explicitly asks for a specific repository or project name."
+                        ),
+                    },
+                    "sort_by": {
+                        "type": "string",
+                        "enum": ["similarity", "date"],
+                        "description": (
+                            "Optional. Use 'date' for chronological queries asking for "
+                            "the 'latest', 'recent', 'newest', 'last', or 'yesterday's' data. "
+                            "Defaults to 'similarity'."
+                        ),
+                    },
                     "top_k": {
                         "type": "integer",
                         "description": "Number of results to return. Default: 5. Max: 15.",
