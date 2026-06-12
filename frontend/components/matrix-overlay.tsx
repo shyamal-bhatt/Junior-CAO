@@ -33,6 +33,8 @@ export function MatrixOverlay() {
   const [mode, setMode] = useState<Mode>("full")
   const [pos, setPos] = useState({ x: 0, y: 0 })
   const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES)
+  const [sessions, setSessions] = useState<{ id: string; title: string }[]>([])
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [input, setInput] = useState("")
   const [loading, setLoading] = useState(false)
   const [grabbed, setGrabbed] = useState(false)
@@ -42,6 +44,65 @@ export function MatrixOverlay() {
     null,
   )
   const logRef = useRef<HTMLDivElement>(null)
+
+  const fetchSessions = useCallback(async () => {
+    try {
+      const res = await fetch("http://localhost:8000/api/v1/chat/sessions")
+      if (res.ok) {
+        const data = await res.json()
+        setSessions(data)
+      }
+    } catch (err) {
+      console.error("Failed to fetch sessions:", err)
+    }
+  }, [])
+
+  const loadSessionMessages = useCallback(async (sessionId: string) => {
+    setLoading(true)
+    try {
+      const res = await fetch(`http://localhost:8000/api/v1/chat/sessions/${sessionId}/messages`)
+      if (res.ok) {
+        const data = await res.json()
+        const uiMsgs: Message[] = data.map((m: any, idx: number) => ({
+          id: m.id || Date.now() + idx,
+          role: m.role,
+          text: m.content,
+        }))
+        setMessages(uiMsgs)
+      }
+    } catch (err) {
+      console.error("Failed to load session messages:", err)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const startNewChat = useCallback(() => {
+    setActiveSessionId(null)
+    setMessages([])
+  }, [])
+
+  const selectSession = useCallback((sessionId: string) => {
+    setActiveSessionId(sessionId)
+    loadSessionMessages(sessionId)
+  }, [loadSessionMessages])
+
+  const deleteSession = useCallback(async (sessionId: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    try {
+      const res = await fetch(`http://localhost:8000/api/v1/chat/sessions/${sessionId}`, {
+        method: "DELETE",
+      })
+      if (res.ok) {
+        if (activeSessionId === sessionId) {
+          startNewChat()
+        }
+        fetchSessions()
+      }
+    } catch (err) {
+      console.error("Failed to delete session:", err)
+    }
+  }, [activeSessionId, fetchSessions, startNewChat])
 
   // Center the floating window the first time it is opened.
   useEffect(() => {
@@ -58,6 +119,38 @@ export function MatrixOverlay() {
       logRef.current.scrollTop = logRef.current.scrollHeight
     }
   }, [messages, loading, mode])
+
+  // Load sessions on mount and set latest as active if available
+  useEffect(() => {
+    const init = async () => {
+      try {
+        const res = await fetch("http://localhost:8000/api/v1/chat/sessions")
+        if (res.ok) {
+          const data = await res.json()
+          setSessions(data)
+          if (data.length > 0) {
+            setActiveSessionId(data[0].id)
+            setLoading(true)
+            const msgRes = await fetch(`http://localhost:8000/api/v1/chat/sessions/${data[0].id}/messages`)
+            if (msgRes.ok) {
+              const msgData = await msgRes.json()
+              const uiMsgs: Message[] = msgData.map((m: any, idx: number) => ({
+                id: m.id || Date.now() + idx,
+                role: m.role,
+                text: m.content,
+              }))
+              setMessages(uiMsgs)
+            }
+            setLoading(false)
+          }
+        }
+      } catch (err) {
+        console.error("Failed initializing chat sessions:", err)
+        setLoading(false)
+      }
+    }
+    init()
+  }, [])
 
   const onPointerMove = useCallback((e: PointerEvent) => {
     if (!dragState.current) return
@@ -109,6 +202,7 @@ export function MatrixOverlay() {
           model: "openai/gpt-4o-mini",
           stream: false,
           context: grabbed ? "Organization/Linkmate" : null,
+          session_id: activeSessionId,
         }),
       })
 
@@ -125,6 +219,11 @@ export function MatrixOverlay() {
           text: data.reply,
         },
       ])
+
+      if (data.session_id) {
+        setActiveSessionId(data.session_id)
+      }
+      fetchSessions()
     } catch (error) {
       console.error("Failed to send message to backend:", error)
       setMessages((m) => [
@@ -295,6 +394,28 @@ export function MatrixOverlay() {
   if (isFull) {
     return (
       <div className="fixed inset-0 z-40 flex font-mono text-neutral-100">
+        {/* Sessions side panel */}
+        <aside
+          className="hidden w-64 shrink-0 flex-col border-r border-neutral-700 bg-neutral-950/85 p-3 md:flex"
+          style={dotPattern}
+        >
+          <div className="mb-3 border-b border-dashed border-neutral-700 pb-2 flex justify-between items-center text-[10px] tracking-widest text-neutral-500">
+            <span>SESSIONS</span>
+            <button
+              onClick={startNewChat}
+              className="text-[9px] border border-neutral-700 px-1.5 py-0.5 bg-neutral-900 text-neutral-400 hover:border-green-400 hover:text-green-400"
+            >
+              + NEW CHAT
+            </button>
+          </div>
+          <SessionPanel
+            sessions={sessions}
+            activeSessionId={activeSessionId}
+            onSelectSession={selectSession}
+            onDeleteSession={deleteSession}
+          />
+        </aside>
+
         {/* Main chat column */}
         <div className="flex min-w-0 flex-1 flex-col bg-neutral-950" style={dotPattern}>
           {/* Title bar */}
@@ -345,7 +466,16 @@ export function MatrixOverlay() {
 
       {/* Title bar */}
       <div className="flex items-center justify-between border-b border-dashed border-neutral-700 px-2 py-1.5">
-        <span className="text-[10px] tracking-widest text-neutral-500">JUNIOR CAO</span>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] tracking-widest text-neutral-500">JUNIOR CAO</span>
+          <button
+            onClick={startNewChat}
+            className="text-[9px] border border-neutral-700 px-1.5 py-0.5 bg-neutral-900 text-neutral-400 hover:border-green-400 hover:text-green-400"
+            title="Start new chat session"
+          >
+            + NEW
+          </button>
+        </div>
         <div
           onPointerDown={startDrag}
           className="mx-2 flex h-4 flex-1 cursor-grab items-center justify-center gap-[3px] active:cursor-grabbing"
@@ -385,6 +515,47 @@ export function MatrixOverlay() {
       </div>
 
       {chatSurface}
+    </div>
+  )
+}
+
+// Sidebar listing of historical chat sessions
+function SessionPanel({
+  sessions,
+  activeSessionId,
+  onSelectSession,
+  onDeleteSession,
+}: {
+  sessions: { id: string; title: string }[]
+  activeSessionId: string | null
+  onSelectSession: (id: string) => void
+  onDeleteSession: (id: string, e: React.MouseEvent) => void
+}) {
+  return (
+    <div className="flex flex-col gap-1.5 overflow-y-auto pr-1">
+      {sessions.map((sess) => {
+        const isActive = sess.id === activeSessionId
+        return (
+          <div
+            key={sess.id}
+            onClick={() => onSelectSession(sess.id)}
+            className={`group flex items-center justify-between border px-2 py-1.5 cursor-pointer transition-colors text-[11px] font-mono ${
+              isActive
+                ? "border-green-400 bg-green-400/10 text-green-400"
+                : "border-neutral-800 bg-neutral-900 text-neutral-400 hover:border-neutral-500 hover:text-neutral-100"
+            }`}
+          >
+            <span className="truncate pr-2">{sess.title}</span>
+            <button
+              onClick={(e) => onDeleteSession(sess.id, e)}
+              className="opacity-0 group-hover:opacity-100 text-neutral-500 hover:text-red-400 px-1 text-[9px] border border-transparent hover:border-neutral-700 bg-transparent"
+              title="Delete session"
+            >
+              DEL
+            </button>
+          </div>
+        )
+      })}
     </div>
   )
 }

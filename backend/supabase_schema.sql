@@ -149,3 +149,64 @@ LANGUAGE SQL STABLE AS $$
     ORDER BY dc.embedding <=> query_embedding
     LIMIT  match_count;
 $$;
+
+
+-- 7. Chat sessions and messages tables for conversation history persistence.
+CREATE TABLE IF NOT EXISTS public.chat_sessions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    title TEXT DEFAULT 'New Chat',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS public.chat_messages (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id UUID REFERENCES public.chat_sessions(id) ON DELETE CASCADE NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    content TEXT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL
+);
+
+-- Enable Row Level Security (RLS) for chat tables
+ALTER TABLE public.chat_sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.chat_messages ENABLE ROW LEVEL SECURITY;
+
+-- Allow full access to service_role (service key)
+CREATE POLICY "Allow service_role full access to chat_sessions" 
+ON public.chat_sessions 
+TO service_role 
+USING (true) 
+WITH CHECK (true);
+
+CREATE POLICY "Allow service_role full access to chat_messages" 
+ON public.chat_messages 
+TO service_role 
+USING (true) 
+WITH CHECK (true);
+
+-- Allow full access to anon
+CREATE POLICY "Allow anon full access to chat_sessions" 
+ON public.chat_sessions 
+TO anon 
+USING (true) 
+WITH CHECK (true);
+
+CREATE POLICY "Allow anon full access to chat_messages" 
+ON public.chat_messages 
+TO anon 
+USING (true) 
+WITH CHECK (true);
+
+-- Allow full access to authenticated users
+CREATE POLICY "Allow authenticated users full access to chat_sessions" 
+ON public.chat_sessions 
+TO authenticated 
+USING (true) 
+WITH CHECK (true);
+
+CREATE POLICY "Allow authenticated users full access to chat_messages" 
+ON public.chat_messages 
+TO authenticated 
+USING (true) 
+WITH CHECK (true);
+

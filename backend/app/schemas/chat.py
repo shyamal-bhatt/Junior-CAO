@@ -40,6 +40,27 @@ class ActionType(str, Enum):
 
 # ── Request schemas ───────────────────────────────────────────────────────────
 
+from datetime import datetime
+
+class ChatSessionCreate(BaseModel):
+    title: str | None = None
+
+
+class ChatSession(BaseModel):
+    id: str
+    title: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ChatMessageResponse(BaseModel):
+    id: str
+    session_id: str
+    role: str
+    content: str
+    created_at: datetime
+
+
 class ChatRequest(BaseModel):
     """
     Payload the frontend sends for a standard chat turn.
@@ -52,11 +73,13 @@ class ChatRequest(BaseModel):
         model           OpenRouter model slug to use.
                         Defaults to a fast, cheap model so the user can override.
         stream          Whether to request SSE streaming. False = single JSON response.
+        session_id      Optional session ID to persist conversation in the database.
     """
     messages: list[ChatMessage] = Field(..., min_length=1)
     context:  str | None        = Field(None, description="Context captured via the grab button")
     model:    str               = Field("openai/gpt-4o-mini", description="OpenRouter model slug")
     stream:   bool              = Field(False)
+    session_id: str | None      = Field(None, description="Optional DB session ID to persist conversation")
 
 
 class ActionRequest(BaseModel):
@@ -103,9 +126,12 @@ class AgentResponse(BaseModel):
                  title, author, platform, status, created_at, similarity).
                  Empty list when no_tool_needed was chosen.
     tool_rounds  Number of tool-calling rounds the agent performed (0–5).
+    session_id   The DB session ID used or created.
     """
     reply:       str
     model:       str
     sources:     list[dict[str, Any]] = []
     tool_rounds: int = 0
+    session_id:  str | None = None
+
 

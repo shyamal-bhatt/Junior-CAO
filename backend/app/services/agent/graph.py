@@ -330,10 +330,23 @@ async def _synthesis_node(state: AgentState, llm_synth: ChatOpenAI) -> dict:
     else:
         logger.info("[PIPELINE START]   (none — no_tool_needed was chosen)")
 
+    # Check if a database search was performed by looking at the messages history
+    search_performed = False
+    for msg in state.get("messages", []):
+        if hasattr(msg, "tool_calls") and msg.tool_calls:
+            for tc in msg.tool_calls:
+                if tc.get("name") == "database_search":
+                    search_performed = True
+                    break
+        if search_performed:
+            break
+
     # ── LLM call ──────────────────────────────────────────────────────────────
     context_text = _format_context(chunks)
+    search_status = "Yes" if search_performed else "No"
     human_content = (
         f"User question: {state['user_query']}\n\n"
+        f"Search Performed: {search_status}\n\n"
         f"Retrieved context ({len(chunks)} chunk(s)):\n\n"
         f"{context_text}"
     )

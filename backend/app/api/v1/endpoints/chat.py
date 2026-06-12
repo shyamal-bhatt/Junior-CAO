@@ -28,9 +28,13 @@ from app.schemas.chat import (
     AgentResponse,
     ChatRequest,
     ChatResponse,
+    ChatSession,
+    ChatSessionCreate,
+    ChatMessageResponse,
 )
 from app.services.chat_service import ChatService, close_http_client
 from app.core.logging import get_logger
+from app.core.supabase import get_supabase_client
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/chat", tags=["Chat"])
@@ -162,6 +166,71 @@ async def run_action(
         )
 
 
+
+# ── Session Management Endpoints ──────────────────────────────────────────────
+
+@router.get("/sessions", response_model=list[ChatSession], summary="List all chat sessions")
+async def list_sessions():
+    client = get_supabase_client()
+    try:
+        res = client.table("chat_sessions").select("*").order("updated_at", desc=True).execute()
+        return res.data
+    except Exception as e:
+        logger.error("Failed to list chat sessions: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database error listing sessions: {e}"
+        )
+
+
+@router.get("/sessions/{session_id}/messages", response_model=list[ChatMessageResponse], summary="Get message history for a session")
+async def get_session_messages(session_id: str):
+    client = get_supabase_client()
+    try:
+        res = client.table("chat_messages").select("*").eq("session_id", session_id).order("created_at", desc=False).execute()
+        return res.data
+    except Exception as e:
+        logger.error("Failed to get session messages for %s: %s", session_id, e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database error getting messages: {e}"
+        )
+
+
+@router.post("/sessions", response_model=ChatSession, summary="Create a new chat session")
+async def create_session(payload: ChatSessionCreate):
+    client = get_supabase_client()
+    try:
+        title = payload.title or "New Chat"
+        res = client.table("chat_sessions").insert({"title": title}).execute()
+        if not res.data:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create chat session: DB returned no data."
+            )
+        return res.data[0]
+    except Exception as e:
+        logger.error("Failed to create chat session: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database error creating session: {e}"
+        )
+
+
+@router.delete("/sessions/{session_id}", summary="Delete a chat session")
+async def delete_session(session_id: str):
+    client = get_supabase_client()
+    try:
+        client.table("chat_sessions").delete().eq("id", session_id).execute()
+        return {"status": "success", "deleted": session_id}
+    except Exception as e:
+        logger.error("Failed to delete chat session %s: %s", session_id, e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database error deleting session: {e}"
+        )
+
+
 # ── Agent endpoint ──────────────────────────────────────────────────────────
 
 @router.post(
@@ -202,6 +271,42 @@ async def agent_chat(
     last_user_content = payload.messages[-1].content
     sanitized_query   = sanitize_and_validate(last_user_content)
 
+    # ── Database Persistence (User Message) ───────────────────────────────────
+    client = get_supabase_client()
+    session_id = payload.session_id
+
+    # Validate or auto-create session
+    if session_id:
+        try:
+            check_session = client.table("chat_sessions").select("id").eq("id", session_id).execute()
+            if not check_session.data:
+                # Create the session if it doesn't exist
+                client.table("chat_sessions").insert({"id": session_id, "title": "New Chat"}).execute()
+        except Exception as e:
+            logger.error("DB error checking/inserting session_id %s: %s", session_id, e)
+    else:
+        try:
+            # Auto-create session
+            title = last_user_content[:40] + ("..." if len(last_user_content) > 40 else "")
+            new_sess = client.table("chat_sessions").insert({"title": title}).execute()
+            if new_sess.data:
+                session_id = new_sess.data[0]["id"]
+            else:
+                logger.error("DB failed to auto-create chat session, proceeding memory-only")
+        except Exception as e:
+            logger.error("DB error auto-creating session: %s", e)
+
+    # Save user message to database
+    if session_id:
+        try:
+            client.table("chat_messages").insert({
+                "session_id": session_id,
+                "role": "user",
+                "content": last_user_content
+            }).execute()
+        except Exception as e:
+            logger.error("DB error saving user message: %s", e)
+
     # Convert frontend ChatMessage list → LangChain message objects
     lc_messages: list = []
     for msg in payload.messages:
@@ -240,11 +345,32 @@ async def agent_chat(
         len(result.get("retrieved_context", [])),
     )
 
+    # ── Database Persistence (Assistant Response) ─────────────────────────────
+    if session_id:
+        try:
+            # Save assistant response
+            client.table("chat_messages").insert({
+                "session_id": session_id,
+                "role": "assistant",
+                "content": reply
+            }).execute()
+
+            # Update session title if it was default "New Chat" and update updated_at timestamp
+            session_data = client.table("chat_sessions").select("title").eq("id", session_id).execute()
+            if session_data.data and session_data.data[0].get("title") == "New Chat":
+                title = last_user_content[:40] + ("..." if len(last_user_content) > 40 else "")
+                client.table("chat_sessions").update({"title": title, "updated_at": "now()"}).eq("id", session_id).execute()
+            else:
+                client.table("chat_sessions").update({"updated_at": "now()"}).eq("id", session_id).execute()
+        except Exception as e:
+            logger.error("DB error saving assistant response or updating session: %s", e)
+
     return AgentResponse(
         reply=reply,
         model=settings.OPENROUTER_DEFAULT_MODEL,
         sources=result.get("retrieved_context", []),
         tool_rounds=result.get("tool_calls_made", 0),
+        session_id=session_id,
     )
 
 
