@@ -96,6 +96,8 @@ def _format_context(chunks: list[dict]) -> str:
         external_id = chunk.get("external_id") or ""
         similarity = chunk.get("similarity")
         sim_label  = f" [score: {similarity:.2f}]" if similarity is not None else ""
+        is_mock    = chunk.get("is_mock", False)
+        mock_label = " [MOCK DATA]" if is_mock else ""
 
         # Construct direct citation URL
         citation_url = ""
@@ -118,7 +120,7 @@ def _format_context(chunks: list[dict]) -> str:
         url_label = f" | citation_url: {citation_url}" if citation_url else ""
 
         parts.append(
-            f"[{i}] {platform.upper()} | {title} | by {author} | {created_at}{sim_label}{url_label}\n"
+            f"[{i}] {platform.upper()} | {title} | by {author} | {created_at}{sim_label}{url_label}{mock_label}\n"
             f"--- RELEVANT CHUNK TEXT ---\n{text}\n"
             f"--- FULL CONTENT / DETAILS ---\n{body or text}"
         )

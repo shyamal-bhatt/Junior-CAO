@@ -18,9 +18,13 @@ CREATE TABLE IF NOT EXISTS public.raw_documents (
     status TEXT, -- Status/State e.g. open/closed, read/unread, confirmed/tentative
     platform TEXT NOT NULL,
     project_tag TEXT NOT NULL,
+    is_mock BOOLEAN DEFAULT FALSE, -- Tag to identify seeded/mock data
     created_at TIMESTAMP WITH TIME ZONE,
     ingested_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL
 );
+
+-- Ensure the column exists on existing installations
+ALTER TABLE public.raw_documents ADD COLUMN IF NOT EXISTS is_mock BOOLEAN DEFAULT FALSE;
 
 -- Index for querying documents by platform and project tags
 CREATE INDEX IF NOT EXISTS idx_raw_documents_platform_project_tag 
@@ -41,6 +45,11 @@ ON public.document_chunks USING hnsw (embedding vector_cosine_ops);
 
 -- Transaction function to save metadata and chunk vector simultaneously in a single transactional step.
 -- Uses ON CONFLICT on external_id to update existing documents (UPSERT) and prevent duplicates.
+-- Drop old overloaded signatures first to prevent candidats ambiguity errors.
+DROP FUNCTION IF EXISTS public.insert_document_with_chunks(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TIMESTAMP WITH TIME ZONE, TEXT, VECTOR);
+DROP FUNCTION IF EXISTS public.insert_document_with_chunks(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TIMESTAMP WITH TIME ZONE, TEXT, public.vector);
+DROP FUNCTION IF EXISTS public.insert_document_with_chunks(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TIMESTAMP WITH TIME ZONE, TEXT, public.vector, BOOLEAN);
+
 CREATE OR REPLACE FUNCTION public.insert_document_with_chunks(
     p_external_id TEXT,
     p_title TEXT,
@@ -51,19 +60,21 @@ CREATE OR REPLACE FUNCTION public.insert_document_with_chunks(
     p_project_tag TEXT,
     p_created_at TIMESTAMP WITH TIME ZONE,
     p_chunk_text TEXT,
-    p_embedding VECTOR(1024)
+    p_embedding VECTOR(1024),
+    p_is_mock BOOLEAN DEFAULT FALSE
 ) RETURNS UUID AS $$
 DECLARE
     v_doc_id UUID;
 BEGIN
-    INSERT INTO public.raw_documents (external_id, title, body, author, status, platform, project_tag, created_at)
-    VALUES (p_external_id, p_title, p_body, p_author, p_status, p_platform, p_project_tag, p_created_at)
+    INSERT INTO public.raw_documents (external_id, title, body, author, status, platform, project_tag, created_at, is_mock)
+    VALUES (p_external_id, p_title, p_body, p_author, p_status, p_platform, p_project_tag, p_created_at, p_is_mock)
     ON CONFLICT (external_id) 
     DO UPDATE SET 
         title = EXCLUDED.title,
         body = EXCLUDED.body,
         status = EXCLUDED.status,
-        created_at = EXCLUDED.created_at
+        created_at = EXCLUDED.created_at,
+        is_mock = EXCLUDED.is_mock
     RETURNING id INTO v_doc_id;
 
     -- Delete old chunks for this document to prevent duplicates
@@ -115,6 +126,10 @@ USING (true);
 --    JOINs raw_documents, and applies optional platform / status / author / project filters.
 --    Supports sort_by: 'similarity' or 'date'.
 -- ─────────────────────────────────────────────────────────────────────────────
+-- Drop old overloaded signatures first to prevent candidates ambiguity errors.
+DROP FUNCTION IF EXISTS public.hybrid_search(VECTOR, TEXT, TEXT, TEXT, TEXT, TEXT, INT);
+DROP FUNCTION IF EXISTS public.hybrid_search(public.vector, TEXT, TEXT, TEXT, TEXT, TEXT, INT);
+
 CREATE OR REPLACE FUNCTION public.hybrid_search(
     query_embedding    VECTOR(1024),
     platform_filter    TEXT    DEFAULT NULL,
@@ -134,7 +149,8 @@ RETURNS TABLE (
     similarity  FLOAT,
     body        TEXT,
     external_id TEXT,
-    project_tag TEXT
+    project_tag TEXT,
+    is_mock     BOOLEAN
 )
 LANGUAGE plpgsql SECURITY DEFINER STABLE AS $$
 BEGIN
@@ -150,7 +166,8 @@ BEGIN
             1.0 - (dc.embedding <=> query_embedding) AS similarity,
             rd.body,
             rd.external_id,
-            rd.project_tag
+            rd.project_tag,
+            rd.is_mock
         FROM   public.document_chunks dc
         JOIN   public.raw_documents   rd ON rd.id = dc.document_id
         WHERE
@@ -172,7 +189,8 @@ BEGIN
             1.0 - (dc.embedding <=> query_embedding) AS similarity,
             rd.body,
             rd.external_id,
-            rd.project_tag
+            rd.project_tag,
+            rd.is_mock
         FROM   public.document_chunks dc
         JOIN   public.raw_documents   rd ON rd.id = dc.document_id
         WHERE

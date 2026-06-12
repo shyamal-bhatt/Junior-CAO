@@ -81,12 +81,12 @@ def _fill_missing_document_data_sync(results: list[dict]) -> list[dict]:
     if not results:
         return results
 
-    # Check if 'body' and 'external_id' are already present in the first result
+    # Check if 'body', 'external_id' and 'is_mock' are already present in the first result
     first_res = results[0]
-    if "body" in first_res and "external_id" in first_res:
+    if "body" in first_res and "external_id" in first_res and "is_mock" in first_res:
         return results
 
-    logger.info("[DATABASE] 'body' or 'external_id' missing from RPC output; executing fallback SELECT query on raw_documents")
+    logger.info("[DATABASE] 'body', 'external_id', or 'is_mock' missing from RPC output; executing fallback SELECT query on raw_documents")
     client = get_supabase_client()
     
     # Collect lists of titles and platforms to batch search
@@ -99,11 +99,13 @@ def _fill_missing_document_data_sync(results: list[dict]) -> list[dict]:
                 r["body"] = r.get("chunk_text") or ""
             if "external_id" not in r:
                 r["external_id"] = ""
+            if "is_mock" not in r:
+                r["is_mock"] = False
         return results
 
     try:
         # Fetch documents matching the titles and platforms
-        db_res = client.table("raw_documents").select("title, platform, body, external_id").in_("title", titles).in_("platform", platforms).execute()
+        db_res = client.table("raw_documents").select("title, platform, body, external_id, is_mock").in_("title", titles).in_("platform", platforms).execute()
         
         # Create lookup map keyed by (platform, title)
         lookup = {}
@@ -111,15 +113,17 @@ def _fill_missing_document_data_sync(results: list[dict]) -> list[dict]:
             key = (doc.get("platform"), doc.get("title"))
             lookup[key] = doc
 
-        # Merge body and external_id into results
+        # Merge body, external_id, and is_mock into results
         for r in results:
             key = (r.get("platform"), r.get("title"))
             if key in lookup:
                 r["body"] = lookup[key].get("body")
                 r["external_id"] = lookup[key].get("external_id")
+                r["is_mock"] = lookup[key].get("is_mock", False)
             else:
                 r["body"] = r.get("chunk_text") or ""
                 r["external_id"] = ""
+                r["is_mock"] = False
     except Exception as e:
         logger.error("[DATABASE] Fallback query to raw_documents failed: %s", e)
         for r in results:
@@ -127,6 +131,8 @@ def _fill_missing_document_data_sync(results: list[dict]) -> list[dict]:
                 r["body"] = r.get("chunk_text") or ""
             if "external_id" not in r:
                 r["external_id"] = ""
+            if "is_mock" not in r:
+                r["is_mock"] = False
                 
     return results
 

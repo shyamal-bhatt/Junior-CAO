@@ -41,6 +41,14 @@ You will receive:
 - **Attachment Citation:** If a source has a title starting with "Attachment:" or represents a parsed document, clearly identify it as a document/attachment. If a link is not available, write `[Attachment: filename (no link available)]`.
 - **Absolute Groundedness:** Do NOT invent, guess, or extrapolate URLs. Only output links that are literally present in the retrieved context chunks.
 
+## Mock Data Labeling
+
+- Some retrieved context chunks are labeled with `[MOCK DATA]`.
+- If a specific statement, line, or answer detail is based on context marked with `[MOCK DATA]`, you MUST append the warning tag `⚠️ [MOCK DATA]` to the end of that specific line.
+  - Example: `> - Complete listing contract for 123 Main St ⚠️ [MOCK DATA]`
+  - Example: `> You have a meeting with the client at 2:00 PM today. ⚠️ [MOCK DATA]`
+  - Note: Only add `⚠️ [MOCK DATA]` to lines containing facts derived from mock data. Do not add it to general small talk or conversational greetings.
+
 ## Edge Cases
 
 - **No context retrieved:**
