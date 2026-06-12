@@ -7,6 +7,7 @@ Service logic to process and normalize Google Calendar events received from Nang
 from typing import List, Dict, Any
 from app.core.logging import get_logger
 from app.features.embeddings.service import embedding_service
+from app.features.normalization.chunking import upsert_document_with_chunks
 
 logger = get_logger(__name__)
 
@@ -60,37 +61,34 @@ async def process_google_calendar_records(records: List[Dict[str, Any]], supabas
         platform = "google-calendar"
         body_length = len(body)
 
+        # Resolve project tag dynamically based on text content
+        content_lower = f"{title} {body}".lower()
+        if "junior cao" in content_lower or "junior-cao" in content_lower or "cao" in content_lower:
+            project_tag = "Junior-CAO"
+        elif "linkmate" in content_lower:
+            project_tag = "linkmate"
+        else:
+            project_tag = "general"
+
         # Normalization logging
         logger.info(
             f"[NORMALIZATION] Successfully extracted fields. "
-            f"Standardized map: {{id: {item_id}, title: {title}, platform: {platform}, body_length: {body_length}}}."
-        )
-
-        # Generate embeddings
-        embedding = await embedding_service.generate_embedding(body or title)
-
-        # Write to database (upsert)
-        logger.info(
-            f"[DATABASE] Writing row to SQL table 'raw_documents' and "
-            f"inserting corresponding vector array to table 'document_chunks'."
+            f"Standardized map: {{id: {item_id}, title: {title}, platform: {platform}, project_tag: {project_tag}, body_length: {body_length}}}."
         )
 
         try:
-            supabase_client.rpc(
-                "insert_document_with_chunks",
-                {
-                    "p_external_id": item_id,
-                    "p_title": title,
-                    "p_body": body,
-                    "p_author": author,
-                    "p_status": status_val,
-                    "p_platform": platform,
-                    "p_project_tag": "google-calendar",
-                    "p_created_at": created_at,
-                    "p_chunk_text": body[:1000] if body else title,
-                    "p_embedding": embedding
-                }
-            ).execute()
+            await upsert_document_with_chunks(
+                supabase_client=supabase_client,
+                embedding_service=embedding_service,
+                external_id=item_id,
+                title=title,
+                body=body,
+                author=author,
+                status=status_val,
+                platform=platform,
+                project_tag=project_tag,
+                created_at=created_at
+            )
             processed_count += 1
         except Exception as db_err:
             logger.error(f"Failed to write Google Calendar event {item_id} to Supabase: {db_err}")

@@ -9,6 +9,7 @@ External Payload -> Attachment Type Validator -> Raw Text Extraction -> Database
 import io
 from typing import Dict, Any, List
 from app.core.logging import get_logger
+from app.features.normalization.chunking import split_text
 
 logger = get_logger(__name__)
 
@@ -16,6 +17,7 @@ logger = get_logger(__name__)
 class AttachmentParserError(Exception):
     """Base error for attachment parsing."""
     pass
+
 
 
 class AttachmentTypeValidator:
@@ -140,10 +142,18 @@ async def process_attachment_pipeline(
         logger.error(f"[PIPELINE FAILED] Validation or extraction failed: {e}")
         raise
         
-    logger.info(f"[TRACE] Raw Text Extraction -> Vector Generation")
+    logger.info(f"[TRACE] Raw Text Extraction -> Chunking & Vector Generation")
     
-    # 2. Vector Generation
-    embedding = await embedding_service.generate_embedding(raw_text)
+    # Chunking
+    chunks = split_text(raw_text)
+    if not chunks:
+        chunks = [f"Attachment: {filename} (empty content)"]
+        
+    logger.info(f"[TRACE] Generating embeddings for {len(chunks)} chunk(s)")
+    embeddings = []
+    for chunk in chunks:
+        emb = await embedding_service.generate_embedding(chunk)
+        embeddings.append(emb)
     
     logger.info(f"[TRACE] Vector Generation -> Database Insertion")
     
@@ -159,17 +169,24 @@ async def process_attachment_pipeline(
         "created_at": metadata.get("created_at")
     }
     
-    # Insert row & embedding
-    logger.info(f"[DATABASE] Writing row to SQL table 'raw_documents' and inserting corresponding vector array to table 'document_chunks'.")
+    # Insert row
+    logger.info(f"[DATABASE] Writing row to SQL table 'raw_documents'")
     res = supabase_client.table("raw_documents").insert(doc_payload).execute()
     doc_id = res.data[0]["id"]
     
-    chunk_payload = {
-        "document_id": doc_id,
-        "chunk_text": raw_text[:500],  # Chunk preview/excerpt
-        "embedding": embedding
-    }
-    supabase_client.table("document_chunks").insert(chunk_payload).execute()
+    # Clean old chunks (if any exist) and insert chunks
+    logger.info(f"[DATABASE] Inserting {len(chunks)} chunks to table 'document_chunks'.")
+    supabase_client.table("document_chunks").delete().eq("document_id", doc_id).execute()
+    
+    chunk_payloads = [
+        {
+            "document_id": doc_id,
+            "chunk_text": chunk,
+            "embedding": emb
+        }
+        for chunk, emb in zip(chunks, embeddings)
+    ]
+    supabase_client.table("document_chunks").insert(chunk_payloads).execute()
     
     logger.info(f"[PIPELINE COMPLETE] Successfully processed and stored {filename}")
     logger.info("=========================================")

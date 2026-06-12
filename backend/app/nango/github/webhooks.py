@@ -12,6 +12,7 @@ from app.core.logging import get_logger
 from app.core.supabase import get_supabase_client
 from app.features.embeddings.service import embedding_service
 from app.core.config import get_settings
+from app.features.normalization.chunking import upsert_document_with_chunks
 
 
 from app.nango.google_calendar.webhooks import process_google_calendar_records
@@ -248,37 +249,22 @@ async def process_github_records(records: List[Dict[str, Any]], supabase_client)
             f"Standardized map: {{id: {item_id}, title: {title}, platform: {platform}, body_length: {body_length}}}."
         )
 
-        # 5. EMBEDDING GENERATION
-        # Route normalized text blocks to processing functions in features/embeddings
-        embedding = await embedding_service.generate_embedding(body or title)
-
-        # 6. TRANSACTIONAL DATABASE WRITE (UPSERT via external_id)
-        # Save structural properties to raw_documents and float array to document_chunks simultaneously in a single transaction
-        logger.info(
-            f"[DATABASE] Writing row to SQL table 'raw_documents' and "
-            f"inserting corresponding vector array to table 'document_chunks'."
-        )
-
         try:
-            supabase_client.rpc(
-                "insert_document_with_chunks",
-                {
-                    "p_external_id": item_id,
-                    "p_title": title,
-                    "p_body": body,
-                    "p_author": author,
-                    "p_status": status_val,
-                    "p_platform": platform,
-                    "p_project_tag": project_tag,
-                    "p_created_at": created_at,
-                    "p_chunk_text": body[:1000] if body else title,
-                    "p_embedding": embedding
-                }
-            ).execute()
+            await upsert_document_with_chunks(
+                supabase_client=supabase_client,
+                embedding_service=embedding_service,
+                external_id=item_id,
+                title=title,
+                body=body,
+                author=author,
+                status=status_val,
+                platform=platform,
+                project_tag=project_tag,
+                created_at=created_at
+            )
             processed_count += 1
         except Exception as db_err:
             logger.error(f"Failed to write record {item_id} to Supabase: {db_err}")
-            # Continue processing others rather than crash mid-payload
             continue
 
     return {

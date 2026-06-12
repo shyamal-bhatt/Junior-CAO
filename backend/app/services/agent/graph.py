@@ -99,6 +99,12 @@ def _format_context(chunks: list[dict]) -> str:
         is_mock    = chunk.get("is_mock", False)
         mock_label = " [MOCK DATA]" if is_mock else ""
 
+        # Retrieve status and project_tag metadata fields
+        status = chunk.get("status") or ""
+        status_label = f" | status: {status}" if status else ""
+        project_tag = chunk.get("project_tag") or ""
+        tag_label = f" | project: {project_tag}" if project_tag else ""
+
         # Construct direct citation URL
         citation_url = ""
         if title.startswith("Attachment:"):
@@ -126,7 +132,7 @@ def _format_context(chunks: list[dict]) -> str:
             body_content = f"⚠️ [MOCK DATA CONTENT]\n{body or text}\n⚠️ [END MOCK DATA CONTENT]"
 
         parts.append(
-            f"[{i}] {platform.upper()} | {title} | by {author} | {created_at}{sim_label}{url_label}{mock_label}\n"
+            f"[{i}] {platform.upper()}{tag_label}{status_label} | {title} | by {author} | {created_at}{sim_label}{url_label}{mock_label}\n"
             f"--- RELEVANT CHUNK TEXT ---\n{text_content}\n"
             f"--- FULL CONTENT / DETAILS ---\n{body_content}"
         )
@@ -385,6 +391,18 @@ async def _synthesis_node(state: AgentState, llm_synth: ChatOpenAI) -> dict:
         if search_performed:
             break
 
+    # Filter the conversation history to include only clean User and Assistant messages,
+    # excluding intermediate tool calls/responses and the current query (which is replaced by context).
+    clean_history = []
+    for msg in state.get("messages", []):
+        if isinstance(msg, ToolMessage):
+            continue
+        if isinstance(msg, AIMessage) and msg.tool_calls:
+            continue
+        if isinstance(msg, HumanMessage) and msg.content == state["user_query"]:
+            continue
+        clean_history.append(msg)
+
     # ── LLM call ──────────────────────────────────────────────────────────────
     context_text = _format_context(chunks)
     search_status = "Yes" if search_performed else "No"
@@ -399,7 +417,7 @@ async def _synthesis_node(state: AgentState, llm_synth: ChatOpenAI) -> dict:
     t0 = time.perf_counter()
     system_msg = SystemMessage(content=synthesis_prompt)
     response: AIMessage = await llm_synth.ainvoke(
-        [system_msg, HumanMessage(content=human_content)]
+        [system_msg, *clean_history, HumanMessage(content=human_content)]
     )
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
 

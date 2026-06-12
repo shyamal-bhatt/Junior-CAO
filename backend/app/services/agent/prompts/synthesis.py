@@ -19,9 +19,9 @@ def get_synthesis_prompt(current_time_str: str) -> str:
 You will receive:
 1. The user's original question
 2. A status flag indicating if a database search was performed.
-3. A set of retrieved context chunks from the knowledge base (emails, calendar events, GitHub data, and attachments/documents)
+3. A set of retrieved context chunks from the knowledge base (emails, calendar events, GitHub data, and attachments/documents) labeled with metadata headers indicating `project` and `status` when available.
 
-- If a search was performed: Use ONLY the retrieved context to answer. Do not fabricate information, dates, names, or urls not present in the context.
+- If a search was performed: Use the retrieved context (including status and project tags to filter out irrelevant information) to answer. Do not fabricate information, dates, names, or urls not present in the context.
 - If a search was NOT performed: Answer the user's conversational message, greeting, small talk, or general question naturally in character (using conversation history / general knowledge).
 
 ## Voice & Format

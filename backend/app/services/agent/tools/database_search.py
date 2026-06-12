@@ -49,6 +49,7 @@ def _embed_sync(query: str) -> list[float]:
 
 def _rpc_sync(
     embedding: list[float],
+    query_text: str,
     platform: str | None,
     status_filter: str | None,
     author_filter: str | None,
@@ -62,6 +63,7 @@ def _rpc_sync(
         "hybrid_search",
         {
             "query_embedding":    embedding,
+            "query_text":         query_text,
             "platform_filter":    platform,
             "status_filter":      status_filter,
             "author_filter":      author_filter,
@@ -190,6 +192,7 @@ async def database_search(
     results = await asyncio.to_thread(
         _rpc_sync,
         embedding,
+        query,
         platform_arg,
         status_filter,
         author_filter,

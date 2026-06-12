@@ -30,6 +30,10 @@ ALTER TABLE public.raw_documents ADD COLUMN IF NOT EXISTS is_mock BOOLEAN DEFAUL
 CREATE INDEX IF NOT EXISTS idx_raw_documents_platform_project_tag 
 ON public.raw_documents (platform, project_tag);
 
+-- Index for full-text search on title and body
+CREATE INDEX IF NOT EXISTS idx_raw_documents_fts 
+ON public.raw_documents USING gin (to_tsvector('english', coalesce(title, '') || ' ' || coalesce(body, '')));
+
 
 -- 3. Create document_chunks table mapping chunks to parent raw_documents
 CREATE TABLE IF NOT EXISTS public.document_chunks (
@@ -106,18 +110,33 @@ TO service_role
 USING (true) 
 WITH CHECK (true);
 
--- Allow select access to authenticated users
-CREATE POLICY "Allow authenticated users select access to raw_documents" 
+-- Allow full access to authenticated users
+DROP POLICY IF EXISTS "Allow authenticated users select access to raw_documents" ON public.raw_documents;
+CREATE POLICY "Allow authenticated users full access to raw_documents" 
 ON public.raw_documents 
-FOR SELECT 
 TO authenticated 
-USING (true);
+USING (true) 
+WITH CHECK (true);
 
-CREATE POLICY "Allow authenticated users select access to document_chunks" 
+DROP POLICY IF EXISTS "Allow authenticated users select access to document_chunks" ON public.document_chunks;
+CREATE POLICY "Allow authenticated users full access to document_chunks" 
 ON public.document_chunks 
-FOR SELECT 
 TO authenticated 
-USING (true);
+USING (true) 
+WITH CHECK (true);
+
+-- Allow full access to anon users
+CREATE POLICY "Allow anon users full access to raw_documents" 
+ON public.raw_documents 
+TO anon 
+USING (true) 
+WITH CHECK (true);
+
+CREATE POLICY "Allow anon users full access to document_chunks" 
+ON public.document_chunks 
+TO anon 
+USING (true) 
+WITH CHECK (true);
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -129,9 +148,12 @@ USING (true);
 -- Drop old overloaded signatures first to prevent candidates ambiguity errors.
 DROP FUNCTION IF EXISTS public.hybrid_search(VECTOR, TEXT, TEXT, TEXT, TEXT, TEXT, INT);
 DROP FUNCTION IF EXISTS public.hybrid_search(public.vector, TEXT, TEXT, TEXT, TEXT, TEXT, INT);
+DROP FUNCTION IF EXISTS public.hybrid_search(VECTOR, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, INT);
+DROP FUNCTION IF EXISTS public.hybrid_search(public.vector, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, INT);
 
 CREATE OR REPLACE FUNCTION public.hybrid_search(
     query_embedding    VECTOR(1024),
+    query_text         TEXT,
     platform_filter    TEXT    DEFAULT NULL,
     status_filter      TEXT    DEFAULT NULL,
     author_filter      TEXT    DEFAULT NULL,
@@ -178,7 +200,38 @@ BEGIN
         ORDER BY rd.created_at DESC NULLS LAST
         LIMIT  match_count;
     ELSE
+        -- RRF Hybrid Search
         RETURN QUERY
+        WITH vector_search AS (
+            SELECT
+                dc.id AS chunk_id,
+                ROW_NUMBER() OVER (ORDER BY dc.embedding <=> query_embedding) AS rank
+            FROM public.document_chunks dc
+            JOIN public.raw_documents rd ON rd.id = dc.document_id
+            WHERE
+                (platform_filter IS NULL OR rd.platform = platform_filter)
+                AND (status_filter  IS NULL OR rd.status  = status_filter)
+                AND (author_filter  IS NULL OR rd.author  ILIKE '%' || author_filter || '%')
+                AND (project_tag_filter IS NULL OR rd.project_tag = project_tag_filter)
+        ),
+        text_search AS (
+            SELECT
+                dc.id AS chunk_id,
+                ROW_NUMBER() OVER (
+                    ORDER BY ts_rank(
+                        to_tsvector('english', coalesce(rd.title, '') || ' ' || coalesce(rd.body, '')),
+                        websearch_to_tsquery('english', query_text)
+                    ) DESC
+                ) AS rank
+            FROM public.document_chunks dc
+            JOIN public.raw_documents rd ON rd.id = dc.document_id
+            WHERE
+                to_tsvector('english', coalesce(rd.title, '') || ' ' || coalesce(rd.body, '')) @@ websearch_to_tsquery('english', query_text)
+                AND (platform_filter IS NULL OR rd.platform = platform_filter)
+                AND (status_filter  IS NULL OR rd.status  = status_filter)
+                AND (author_filter  IS NULL OR rd.author  ILIKE '%' || author_filter || '%')
+                AND (project_tag_filter IS NULL OR rd.project_tag = project_tag_filter)
+        )
         SELECT
             dc.chunk_text,
             rd.title,
@@ -191,15 +244,15 @@ BEGIN
             rd.external_id,
             rd.project_tag,
             rd.is_mock
-        FROM   public.document_chunks dc
-        JOIN   public.raw_documents   rd ON rd.id = dc.document_id
+        FROM public.document_chunks dc
+        JOIN public.raw_documents rd ON rd.id = dc.document_id
+        LEFT JOIN vector_search vs ON vs.chunk_id = dc.id
+        LEFT JOIN text_search ts ON ts.chunk_id = dc.id
         WHERE
-            (platform_filter IS NULL OR rd.platform = platform_filter)
-            AND (status_filter  IS NULL OR rd.status  = status_filter)
-            AND (author_filter  IS NULL OR rd.author  ILIKE '%' || author_filter || '%')
-            AND (project_tag_filter IS NULL OR rd.project_tag = project_tag_filter)
-        ORDER BY dc.embedding <=> query_embedding
-        LIMIT  match_count;
+            vs.rank IS NOT NULL OR ts.rank IS NOT NULL
+        ORDER BY
+            coalesce(1.0 / (60.0 + vs.rank), 0.0) + coalesce(1.0 / (60.0 + ts.rank), 0.0) DESC
+        LIMIT match_count;
     END IF;
 END;
 $$;
