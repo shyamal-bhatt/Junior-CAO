@@ -1,5 +1,8 @@
 import asyncio
 import httpx
+from dotenv import load_dotenv
+load_dotenv("/Users/sam/Projects/Junior CAO/backend/.env")
+
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.supabase import get_supabase_client
