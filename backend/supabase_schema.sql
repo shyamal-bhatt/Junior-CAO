@@ -133,7 +133,7 @@ RETURNS TABLE (
     body        TEXT,
     external_id TEXT
 )
-LANGUAGE SQL STABLE AS $$
+LANGUAGE SQL SECURITY DEFINER STABLE AS $$
     SELECT
         dc.chunk_text,
         rd.title,
@@ -153,6 +153,7 @@ LANGUAGE SQL STABLE AS $$
     ORDER BY dc.embedding <=> query_embedding
     LIMIT  match_count;
 $$;
+
 
 
 
