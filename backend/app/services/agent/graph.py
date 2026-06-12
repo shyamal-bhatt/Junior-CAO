@@ -219,12 +219,14 @@ async def _execute_tools_node(state: AgentState) -> dict:
     for i, tc in enumerate(search_calls, 1):
         args = tc.get("args", {})
         logger.info(
-            "[DATABASE]   Call [%d]  query=%r  platform=%s  status=%s  author=%s  top_k=%s",
+            "[DATABASE]   Call [%d]  query=%r  platform=%s  status=%s  author=%s  project_tag=%s  sort_by=%s  top_k=%s",
             i,
             args.get("query", ""),
             args.get("platform", "any"),
             args.get("status_filter", "—"),
             args.get("author_filter", "—"),
+            args.get("project_tag", "—"),
+            args.get("sort_by", "similarity"),
             args.get("top_k", 5),
         )
 
@@ -243,6 +245,8 @@ async def _execute_tools_node(state: AgentState) -> dict:
                 platform      = args.get("platform", "any"),
                 status_filter = args.get("status_filter"),
                 author_filter = args.get("author_filter"),
+                project_tag   = args.get("project_tag"),
+                sort_by       = args.get("sort_by", "similarity"),
                 top_k         = int(args.get("top_k", 5)),
             )
             elapsed_ms = int((time.perf_counter() - t0) * 1000)

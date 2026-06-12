@@ -219,12 +219,22 @@ async def process_github_records(records: List[Dict[str, Any]], supabase_client)
         created_at = item.get("created_at")
 
         # Determine if repository is tracked
-        repo_data = item.get("repository") or {}
         repo_name = ""
-        if isinstance(repo_data, dict):
-            repo_name = repo_data.get("name") or repo_data.get("full_name") or ""
-        elif isinstance(repo_data, str):
-            repo_name = repo_data
+        if item.get("repo_full_name"):
+            repo_name = item.get("repo_full_name").split("/")[-1]
+        elif item.get("repository_url"):
+            repo_name = item.get("repository_url").split("/")[-1]
+        elif item.get("html_url"):
+            parts = item.get("html_url").split("/")
+            if len(parts) > 4:
+                repo_name = parts[4]
+        
+        if not repo_name:
+            repo_data = item.get("repository") or {}
+            if isinstance(repo_data, dict):
+                repo_name = repo_data.get("name") or repo_data.get("full_name") or ""
+            elif isinstance(repo_data, str):
+                repo_name = repo_data
 
         # Use actual repository name as the project tag directly
         project_tag = repo_name if repo_name else "github"
