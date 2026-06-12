@@ -22,15 +22,7 @@ type Message = {
 
 type Mode = "full" | "floating" | "docked"
 
-const INITIAL_MESSAGES: Message[] = [
-  { id: 1, role: "assistant", text: "> SYSTEM ONLINE. Junior CAO ready." },
-  { id: 2, role: "user", text: "Pull the latest figures for Linkmate." },
-  {
-    id: 3,
-    role: "assistant",
-    text: "> Querying Supabase vectors for [Linkmate]... 3 records matched.",
-  },
-]
+const INITIAL_MESSAGES: Message[] = []
 
 const dotPattern = {
   backgroundImage: "radial-gradient(#ffffff20 1px, transparent 1px)",
@@ -107,7 +99,7 @@ export function MatrixOverlay() {
         role: m.role,
         content: m.text,
       }))
-      const response = await fetch("http://localhost:8000/api/v1/chat/", {
+      const response = await fetch("http://localhost:8000/api/v1/chat/agent", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
