@@ -25,6 +25,7 @@ the graph forces transition to synthesis with whatever context was gathered.
 The compiled graph is a singleton — use get_compiled_graph() everywhere.
 """
 
+from datetime import datetime
 import asyncio
 import json
 import time
@@ -41,8 +42,8 @@ from langgraph.graph import END, StateGraph
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.services.agent.prompts.intent_router import INTENT_ROUTER_PROMPT
-from app.services.agent.prompts.synthesis import SYNTHESIS_PROMPT
+from app.services.agent.prompts.intent_router import get_intent_router_prompt
+from app.services.agent.prompts.synthesis import get_synthesis_prompt
 from app.services.agent.state import AgentState
 from app.services.agent.tools.database_search import database_search
 from app.services.agent.tools.definitions import TOOL_SCHEMAS
@@ -78,27 +79,52 @@ def _make_llm() -> ChatOpenAI:
 def _format_context(chunks: list[dict]) -> str:
     """
     Convert retrieved chunk dicts into a readable block for the synthesis LLM.
-    Each chunk is numbered and labelled with its source.
+    Each chunk is numbered and labelled with its source, including its full text
+    body, external platform ID, and direct citation URL where available.
     """
     if not chunks:
         return "No data retrieved from the knowledge base."
 
     parts: list[str] = []
     for i, chunk in enumerate(chunks, 1):
-        platform   = (chunk.get("platform") or "unknown").upper()
+        platform   = (chunk.get("platform") or "unknown").lower()
         title      = chunk.get("title") or "Untitled"
         author     = chunk.get("author") or "Unknown"
         created_at = chunk.get("created_at") or ""
         text       = chunk.get("chunk_text") or ""
+        body       = chunk.get("body") or ""
+        external_id = chunk.get("external_id") or ""
         similarity = chunk.get("similarity")
         sim_label  = f" [score: {similarity:.2f}]" if similarity is not None else ""
 
+        # Construct direct citation URL
+        citation_url = ""
+        if title.startswith("Attachment:"):
+            filename = title.replace("Attachment:", "").strip()
+            # Link to a Gmail search for this attachment file name
+            citation_url = f"https://mail.google.com/mail/u/0/#search/has%3Aattachment+filename%3A{filename}"
+        elif platform == "gmail" and external_id:
+            citation_url = f"https://mail.google.com/mail/u/0/#inbox/{external_id}"
+        elif platform == "google-calendar" and external_id:
+            citation_url = f"https://calendar.google.com/calendar/r/event/{external_id}"
+        elif platform == "github" and external_id:
+            if external_id.isdigit():
+                citation_url = f"https://github.com/shyamal-bhatt/Junior-CAO/issues/{external_id}"
+            else:
+                import urllib.parse
+                safe_q = urllib.parse.quote(external_id)
+                citation_url = f"https://github.com/shyamal-bhatt/Junior-CAO/search?q={safe_q}"
+        
+        url_label = f" | citation_url: {citation_url}" if citation_url else ""
+
         parts.append(
-            f"[{i}] {platform} | {title} | by {author} | {created_at}{sim_label}\n"
-            f"{text}"
+            f"[{i}] {platform.upper()} | {title} | by {author} | {created_at}{sim_label}{url_label}\n"
+            f"--- RELEVANT CHUNK TEXT ---\n{text}\n"
+            f"--- FULL CONTENT / DETAILS ---\n{body or text}"
         )
 
     return "\n\n---\n\n".join(parts)
+
 
 
 def _truncate(text: str, n: int = 120) -> str:
@@ -126,9 +152,12 @@ async def _intent_router_node(state: AgentState, llm_router: ChatOpenAI) -> dict
     logger.info("[ROUTING] Model          : %s", settings.OPENROUTER_DEFAULT_MODEL)
     logger.info("[ROUTING] Context window : %d messages in state", len(state["messages"]))
     logger.info("[ROUTING] User query     : %s", _truncate(state["user_query"]))
+    current_time_str = datetime.now().strftime("%A, %B %d, %Y %I:%M %p")
+    router_prompt = get_intent_router_prompt(current_time_str)
+
     logger.info(
         "[ROUTING] System prompt  : %s",
-        _truncate(INTENT_ROUTER_PROMPT.strip(), 200),
+        _truncate(router_prompt.strip(), 200),
     )
     logger.info("[ROUTING] Tools offered  : %s", [t["function"]["name"] for t in TOOL_SCHEMAS])
 
@@ -141,7 +170,7 @@ async def _intent_router_node(state: AgentState, llm_router: ChatOpenAI) -> dict
 
     # ── LLM call ──────────────────────────────────────────────────────────────
     t0 = time.perf_counter()
-    system_msg = SystemMessage(content=INTENT_ROUTER_PROMPT)
+    system_msg = SystemMessage(content=router_prompt)
     response: AIMessage = await llm_router.ainvoke(
         [system_msg, *state["messages"]]
     )
@@ -302,6 +331,9 @@ async def _synthesis_node(state: AgentState, llm_synth: ChatOpenAI) -> dict:
     """
     chunks = state["retrieved_context"]
 
+    current_time_str = datetime.now().strftime("%A, %B %d, %Y %I:%M %p")
+    synthesis_prompt = get_synthesis_prompt(current_time_str)
+
     # ── ENTER log ─────────────────────────────────────────────────────────────
     logger.info(_DIV2)
     logger.info(
@@ -313,7 +345,7 @@ async def _synthesis_node(state: AgentState, llm_synth: ChatOpenAI) -> dict:
     logger.info("[PIPELINE START] User query  : %s", _truncate(state["user_query"]))
     logger.info(
         "[PIPELINE START] System prompt: %s",
-        _truncate(SYNTHESIS_PROMPT.strip(), 200),
+        _truncate(synthesis_prompt.strip(), 200),
     )
     logger.info("[PIPELINE START] Context chunks being passed to LLM:")
     if chunks:
@@ -353,7 +385,7 @@ async def _synthesis_node(state: AgentState, llm_synth: ChatOpenAI) -> dict:
     logger.debug("[PIPELINE START] Full human message to synthesis LLM:\n%s", human_content)
 
     t0 = time.perf_counter()
-    system_msg = SystemMessage(content=SYNTHESIS_PROMPT)
+    system_msg = SystemMessage(content=synthesis_prompt)
     response: AIMessage = await llm_synth.ainvoke(
         [system_msg, HumanMessage(content=human_content)]
     )
@@ -363,6 +395,7 @@ async def _synthesis_node(state: AgentState, llm_synth: ChatOpenAI) -> dict:
     logger.info("[PIPELINE COMPLETE] ← Synthesis LLM responded in %dms", elapsed_ms)
     logger.info("[PIPELINE COMPLETE] Final answer:\n%s", response.content)
     logger.info(_DIV2)
+
 
     return {"final_response": response.content}
 

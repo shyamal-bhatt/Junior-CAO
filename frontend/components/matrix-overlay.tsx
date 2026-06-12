@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import React, { useCallback, useEffect, useRef, useState } from "react"
 import {
   Lasso,
   Minus,
@@ -27,6 +27,48 @@ const INITIAL_MESSAGES: Message[] = []
 const dotPattern = {
   backgroundImage: "radial-gradient(#ffffff20 1px, transparent 1px)",
   backgroundSize: "10px 10px",
+}
+
+function renderMessageText(text: string) {
+  if (!text) return null;
+
+  // Regex to match markdown links: [label](url)
+  const mdLinkRegex = /\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)/g;
+  const parts: (string | React.ReactNode)[] = [];
+  let lastIndex = 0;
+  let match;
+
+  while ((match = mdLinkRegex.exec(text)) !== null) {
+    const [fullMatch, linkText, url] = match;
+    const matchIndex = match.index;
+
+    // Append plain text before the match
+    if (matchIndex > lastIndex) {
+      parts.push(text.slice(lastIndex, matchIndex));
+    }
+
+    // Append the clickable link styled with neon/cyber colors
+    parts.push(
+      <a
+        key={matchIndex}
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-[#38bdf8] hover:text-[#0ea5e9] underline font-semibold break-all"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {linkText}
+      </a>
+    );
+
+    lastIndex = mdLinkRegex.lastIndex;
+  }
+
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex));
+  }
+
+  return parts.length > 0 ? parts : text;
 }
 
 export function MatrixOverlay() {
@@ -323,14 +365,14 @@ export function MatrixOverlay() {
           {messages.map((msg) =>
             msg.role === "user" ? (
               <div key={msg.id} className="flex justify-end">
-                <div className="max-w-[80%] border border-neutral-700 bg-neutral-800 px-2 py-1.5 text-xs leading-relaxed text-neutral-100">
+                <div className="max-w-[80%] border border-neutral-700 bg-neutral-800 px-2 py-1.5 text-xs leading-relaxed text-neutral-100 whitespace-pre-wrap">
                   {msg.text}
                 </div>
               </div>
             ) : (
               <div key={msg.id} className="flex justify-start">
-                <div className="max-w-[85%] border border-neutral-800 bg-neutral-950/60 px-2 py-1.5 text-xs leading-relaxed text-green-400">
-                  {msg.text}
+                <div className="max-w-[85%] border border-neutral-800 bg-neutral-950/60 px-2 py-1.5 text-xs leading-relaxed text-green-400 whitespace-pre-wrap">
+                  {renderMessageText(msg.text)}
                 </div>
               </div>
             ),

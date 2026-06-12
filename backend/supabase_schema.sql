@@ -129,7 +129,9 @@ RETURNS TABLE (
     platform    TEXT,
     status      TEXT,
     created_at  TIMESTAMPTZ,
-    similarity  FLOAT
+    similarity  FLOAT,
+    body        TEXT,
+    external_id TEXT
 )
 LANGUAGE SQL STABLE AS $$
     SELECT
@@ -139,7 +141,9 @@ LANGUAGE SQL STABLE AS $$
         rd.platform,
         rd.status,
         rd.created_at,
-        1 - (dc.embedding <=> query_embedding) AS similarity
+        1 - (dc.embedding <=> query_embedding) AS similarity,
+        rd.body,
+        rd.external_id
     FROM   public.document_chunks dc
     JOIN   public.raw_documents   rd ON rd.id = dc.document_id
     WHERE
@@ -149,6 +153,7 @@ LANGUAGE SQL STABLE AS $$
     ORDER BY dc.embedding <=> query_embedding
     LIMIT  match_count;
 $$;
+
 
 
 -- 7. Chat sessions and messages tables for conversation history persistence.

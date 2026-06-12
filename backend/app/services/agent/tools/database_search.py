@@ -69,6 +69,64 @@ def _rpc_sync(
     return response.data or []
 
 
+def _fill_missing_document_data_sync(results: list[dict]) -> list[dict]:
+    """
+    If the RPC did not return 'body' and 'external_id', query the raw_documents
+    table to retrieve them for the matched records.
+    """
+    if not results:
+        return results
+
+    # Check if 'body' and 'external_id' are already present in the first result
+    first_res = results[0]
+    if "body" in first_res and "external_id" in first_res:
+        return results
+
+    logger.info("[DATABASE] 'body' or 'external_id' missing from RPC output; executing fallback SELECT query on raw_documents")
+    client = get_supabase_client()
+    
+    # Collect lists of titles and platforms to batch search
+    titles = list({r.get("title") for r in results if r.get("title")})
+    platforms = list({r.get("platform") for r in results if r.get("platform")})
+    
+    if not titles or not platforms:
+        for r in results:
+            if "body" not in r:
+                r["body"] = r.get("chunk_text") or ""
+            if "external_id" not in r:
+                r["external_id"] = ""
+        return results
+
+    try:
+        # Fetch documents matching the titles and platforms
+        db_res = client.table("raw_documents").select("title, platform, body, external_id").in_("title", titles).in_("platform", platforms).execute()
+        
+        # Create lookup map keyed by (platform, title)
+        lookup = {}
+        for doc in db_res.data or []:
+            key = (doc.get("platform"), doc.get("title"))
+            lookup[key] = doc
+
+        # Merge body and external_id into results
+        for r in results:
+            key = (r.get("platform"), r.get("title"))
+            if key in lookup:
+                r["body"] = lookup[key].get("body")
+                r["external_id"] = lookup[key].get("external_id")
+            else:
+                r["body"] = r.get("chunk_text") or ""
+                r["external_id"] = ""
+    except Exception as e:
+        logger.error("[DATABASE] Fallback query to raw_documents failed: %s", e)
+        for r in results:
+            if "body" not in r:
+                r["body"] = r.get("chunk_text") or ""
+            if "external_id" not in r:
+                r["external_id"] = ""
+                
+    return results
+
+
 async def database_search(
     query:         str,
     platform:      str = "any",
@@ -90,7 +148,8 @@ async def database_search(
     Returns
     -------
     list[dict]  Each dict has: chunk_text, title, author, platform, status,
-                created_at (ISO string), similarity (0–1 float).
+                created_at (ISO string), similarity (0–1 float), body (string),
+                and external_id (string).
     """
     platform_arg = None if platform == "any" else platform
 
@@ -124,7 +183,9 @@ async def database_search(
     )
     rpc_ms = int((time.perf_counter() - t1) * 1000)
 
+    # 3. Fallback/Fill missing columns
     if results:
+        results = await asyncio.to_thread(_fill_missing_document_data_sync, results)
         sims = [r.get("similarity", 0) for r in results]
         logger.info(
             "[DATABASE] RPC returned %d rows in %dms  |  sim range: %.3f – %.3f",
@@ -134,3 +195,4 @@ async def database_search(
         logger.info("[DATABASE] RPC returned 0 rows in %dms (no matches)", rpc_ms)
 
     return results
+
