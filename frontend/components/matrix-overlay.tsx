@@ -1,6 +1,7 @@
 "use client"
 
 import React, { useCallback, useEffect, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 import {
   Lasso,
   Minus,
@@ -71,7 +72,7 @@ function renderMessageText(text: string) {
   return parts.length > 0 ? parts : text;
 }
 
-export function MatrixOverlay() {
+export function MatrixOverlay({ isPopup = false }: { isPopup?: boolean }) {
   const [mode, setMode] = useState<Mode>("full")
   const [pos, setPos] = useState({ x: 0, y: 0 })
   const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES)
@@ -81,11 +82,98 @@ export function MatrixOverlay() {
   const [loading, setLoading] = useState(false)
   const [grabbed, setGrabbed] = useState(false)
   const [listening, setListening] = useState(false)
+  const [pipWindow, setPipWindow] = useState<any | null>(null)
 
   const dragState = useRef<{ startX: number; startY: number; baseX: number; baseY: number } | null>(
     null,
   )
   const logRef = useRef<HTMLDivElement>(null)
+  const popupRef = useRef<Window | null>(null)
+
+  const stateRef = useRef({ messages, activeSessionId, sessions, loading, grabbed, mode, pipWindow })
+  useEffect(() => {
+    stateRef.current = { messages, activeSessionId, sessions, loading, grabbed, mode, pipWindow }
+  }, [messages, activeSessionId, sessions, loading, grabbed, mode, pipWindow])
+
+  const broadcastState = useCallback((updates: Partial<{
+    messages: Message[]
+    activeSessionId: string | null
+    sessions: typeof sessions
+    loading: boolean
+    grabbed: boolean
+  }>) => {
+    if (typeof window === "undefined") return
+    try {
+      const channel = new BroadcastChannel("junior-cao-sync")
+      channel.postMessage({
+        type: "STATE_CHANGED",
+        state: updates,
+      })
+      channel.close()
+    } catch (err) {
+      console.error("Failed to broadcast state:", err)
+    }
+  }, [])
+
+  const openPopup = useCallback(async () => {
+    if (typeof window === "undefined") return
+    if (popupRef.current || pipWindow) return
+
+    setMode("docked")
+
+    const width = 440
+    const height = 580
+    const left = Math.max(0, window.screen.width / 2 - width / 2)
+    const top = Math.max(0, window.screen.height / 2 - height / 2)
+
+    // Check for Document Picture-in-Picture API, avoiding headless browser crash
+    const isAutomated = typeof navigator !== "undefined" && navigator.webdriver
+    const pipAPI = !isAutomated && (window as any).documentPictureInPicture
+    if (pipAPI) {
+      try {
+        const pw = await pipAPI.requestWindow({
+          width,
+          height,
+        })
+
+        // Copy styles
+        const styles = document.querySelectorAll("style, link[rel='stylesheet']")
+        styles.forEach((el) => {
+          pw.document.head.appendChild(el.cloneNode(true))
+        })
+
+        // Style the PiP document body
+        pw.document.body.className = "bg-neutral-950 m-0 overflow-hidden"
+
+        setPipWindow(pw)
+
+        // Listen for PiP window closing
+        pw.addEventListener("pagehide", () => {
+          setPipWindow(null)
+          setMode("full")
+        })
+
+        return
+      } catch (err) {
+        console.error("Failed to open Document Picture-in-Picture window:", err)
+      }
+    }
+
+    // Fallback to standard window open
+    const popup = window.open(
+      "/popup",
+      "JuniorCAOPopup",
+      `width=${width},height=${height},left=${left},top=${top},menubar=no,status=no,toolbar=no`
+    )
+
+    if (!popup) {
+      console.warn("Popup blocked by browser. Falling back to internal floating mode.")
+      setMode("floating")
+      return
+    }
+
+    popupRef.current = popup
+  }, [pipWindow])
 
   const fetchSessions = useCallback(async () => {
     try {
@@ -93,14 +181,16 @@ export function MatrixOverlay() {
       if (res.ok) {
         const data = await res.json()
         setSessions(data)
+        broadcastState({ sessions: data })
       }
     } catch (err) {
       console.error("Failed to fetch sessions:", err)
     }
-  }, [])
+  }, [broadcastState])
 
   const loadSessionMessages = useCallback(async (sessionId: string) => {
     setLoading(true)
+    broadcastState({ loading: true })
     try {
       const res = await fetch(`http://localhost:8000/api/v1/chat/sessions/${sessionId}/messages`)
       if (res.ok) {
@@ -111,23 +201,27 @@ export function MatrixOverlay() {
           text: m.content,
         }))
         setMessages(uiMsgs)
+        broadcastState({ messages: uiMsgs, loading: false })
       }
     } catch (err) {
       console.error("Failed to load session messages:", err)
+      broadcastState({ loading: false })
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [broadcastState])
 
   const startNewChat = useCallback(() => {
     setActiveSessionId(null)
     setMessages([])
-  }, [])
+    broadcastState({ activeSessionId: null, messages: [] })
+  }, [broadcastState])
 
   const selectSession = useCallback((sessionId: string) => {
     setActiveSessionId(sessionId)
+    broadcastState({ activeSessionId: sessionId })
     loadSessionMessages(sessionId)
-  }, [loadSessionMessages])
+  }, [loadSessionMessages, broadcastState])
 
   const deleteSession = useCallback(async (sessionId: string, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -136,22 +230,39 @@ export function MatrixOverlay() {
         method: "DELETE",
       })
       if (res.ok) {
-        if (activeSessionId === sessionId) {
-          startNewChat()
+        let nextActiveId = stateRef.current.activeSessionId
+        let nextMessages = stateRef.current.messages
+        if (stateRef.current.activeSessionId === sessionId) {
+          nextActiveId = null
+          nextMessages = []
+          setActiveSessionId(null)
+          setMessages([])
         }
-        fetchSessions()
+
+        const sRes = await fetch("http://localhost:8000/api/v1/chat/sessions")
+        let latestSessions = stateRef.current.sessions
+        if (sRes.ok) {
+          latestSessions = await sRes.json()
+          setSessions(latestSessions)
+        }
+
+        broadcastState({
+          activeSessionId: nextActiveId,
+          messages: nextMessages,
+          sessions: latestSessions,
+        })
       }
     } catch (err) {
       console.error("Failed to delete session:", err)
     }
-  }, [activeSessionId, fetchSessions, startNewChat])
+  }, [broadcastState])
 
   // Center the floating window the first time it is opened.
   useEffect(() => {
     if (mode === "floating" && pos.x === 0 && pos.y === 0) {
       setPos({
-        x: Math.max(16, window.innerWidth / 2 - 200),
-        y: Math.max(16, window.innerHeight / 2 - 260),
+        x: Math.max(16, window.innerWidth / 2 - 220),
+        y: Math.max(16, window.innerHeight / 2 - 290),
       })
     }
   }, [mode, pos.x, pos.y])
@@ -165,6 +276,7 @@ export function MatrixOverlay() {
   // Load sessions on mount and set latest as active if available
   useEffect(() => {
     const init = async () => {
+      if (isPopup) return
       try {
         const res = await fetch("http://localhost:8000/api/v1/chat/sessions")
         if (res.ok) {
@@ -192,7 +304,136 @@ export function MatrixOverlay() {
       }
     }
     init()
+  }, [isPopup])
+
+  // BroadcastChannel state synchronization
+  useEffect(() => {
+    if (typeof window === "undefined") return
+
+    const channel = new BroadcastChannel("junior-cao-sync")
+
+    const handleMessage = (e: MessageEvent) => {
+      const data = e.data
+      if (!data || typeof data !== "object") return
+
+      switch (data.type) {
+        case "POPUP_READY":
+          if (!isPopup) {
+            channel.postMessage({
+              type: "SYNC_STATE",
+              messages: stateRef.current.messages,
+              activeSessionId: stateRef.current.activeSessionId,
+              sessions: stateRef.current.sessions,
+              loading: stateRef.current.loading,
+              grabbed: stateRef.current.grabbed,
+            })
+          }
+          break
+
+        case "SYNC_STATE":
+          if (isPopup) {
+            setMessages(data.messages)
+            setActiveSessionId(data.activeSessionId)
+            setSessions(data.sessions)
+            setLoading(data.loading)
+            setGrabbed(data.grabbed)
+          }
+          break
+
+        case "STATE_CHANGED":
+          if (data.state) {
+            if (data.state.messages !== undefined) setMessages(data.state.messages)
+            if (data.state.activeSessionId !== undefined) setActiveSessionId(data.state.activeSessionId)
+            if (data.state.sessions !== undefined) setSessions(data.state.sessions)
+            if (data.state.loading !== undefined) setLoading(data.state.loading)
+            if (data.state.grabbed !== undefined) setGrabbed(data.state.grabbed)
+          }
+          break
+
+        case "POPUP_CLOSED":
+          if (!isPopup) {
+            setMode("full")
+            popupRef.current = null
+          }
+          break
+      }
+    }
+
+    channel.addEventListener("message", handleMessage)
+
+    if (isPopup) {
+      channel.postMessage({ type: "POPUP_READY" })
+    }
+
+    return () => {
+      channel.removeEventListener("message", handleMessage)
+      channel.close()
+    }
+  }, [isPopup])
+
+  // Clean popup reference on parent unmount
+  useEffect(() => {
+    return () => {
+      if (popupRef.current) {
+        popupRef.current.close()
+      }
+    }
   }, [])
+
+  // Tab visibility change monitoring
+  useEffect(() => {
+    if (isPopup) return
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        if (stateRef.current.mode !== "docked") {
+          openPopup()
+        }
+      } else if (document.visibilityState === "visible") {
+        if (popupRef.current) {
+          popupRef.current.close()
+          popupRef.current = null
+        }
+        if (stateRef.current.pipWindow) {
+          stateRef.current.pipWindow.close()
+        }
+        setMode("full")
+      }
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange)
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
+    }
+  }, [isPopup, openPopup])
+
+  // Close popup window listener
+  useEffect(() => {
+    if (!isPopup) return
+
+    const handleBeforeUnload = () => {
+      const channel = new BroadcastChannel("junior-cao-sync")
+      channel.postMessage({ type: "POPUP_CLOSED" })
+      channel.close()
+    }
+
+    window.addEventListener("beforeunload", handleBeforeUnload)
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload)
+  }, [isPopup])
+
+  // Fallback polling for popup window checks
+  useEffect(() => {
+    if (isPopup) return
+
+    const interval = setInterval(() => {
+      if (popupRef.current && popupRef.current.closed) {
+        popupRef.current = null
+        setMode("full")
+      }
+    }, 1000)
+
+    return () => clearInterval(interval)
+  }, [isPopup])
 
   const onPointerMove = useCallback((e: PointerEvent) => {
     if (!dragState.current) return
@@ -229,6 +470,8 @@ export function MatrixOverlay() {
     setInput("")
     setLoading(true)
 
+    broadcastState({ messages: nextMessages, loading: true })
+
     try {
       const formattedMessages = nextMessages.map((m) => ({
         role: m.role,
@@ -253,29 +496,46 @@ export function MatrixOverlay() {
       }
 
       const data = await response.json()
-      setMessages((m) => [
-        ...m,
-        {
-          id: Date.now(),
-          role: "assistant",
-          text: data.reply,
-        },
-      ])
+      const assistantMsg: Message = {
+        id: Date.now(),
+        role: "assistant",
+        text: data.reply,
+      }
+      const updatedMessages = [...nextMessages, assistantMsg]
+      setMessages(updatedMessages)
 
+      let nextActiveSessionId = activeSessionId
       if (data.session_id) {
+        nextActiveSessionId = data.session_id
         setActiveSessionId(data.session_id)
       }
-      fetchSessions()
+
+      const sessionsRes = await fetch("http://localhost:8000/api/v1/chat/sessions")
+      let latestSessions = sessions
+      if (sessionsRes.ok) {
+        latestSessions = await sessionsRes.json()
+        setSessions(latestSessions)
+      }
+
+      broadcastState({
+        messages: updatedMessages,
+        activeSessionId: nextActiveSessionId,
+        sessions: latestSessions,
+        loading: false,
+      })
     } catch (error) {
       console.error("Failed to send message to backend:", error)
-      setMessages((m) => [
-        ...m,
-        {
-          id: Date.now(),
-          role: "assistant",
-          text: "> ERROR: Failed to communicate with backend.",
-        },
-      ])
+      const errorMsg: Message = {
+        id: Date.now(),
+        role: "assistant",
+        text: "> ERROR: Failed to communicate with backend.",
+      }
+      const updatedMessages = [...nextMessages, errorMsg]
+      setMessages(updatedMessages)
+      broadcastState({
+        messages: updatedMessages,
+        loading: false,
+      })
     } finally {
       setLoading(false)
     }
@@ -283,6 +543,7 @@ export function MatrixOverlay() {
 
   const handleAction = async (id: string) => {
     setLoading(true)
+    broadcastState({ loading: true })
     try {
       const formattedMessages = messages.map((m) => ({
         role: m.role,
@@ -306,35 +567,28 @@ export function MatrixOverlay() {
       }
 
       const data = await response.json()
-      setMessages((m) => [
-        ...m,
-        {
-          id: Date.now(),
-          role: "assistant",
-          text: data.result,
-        },
-      ])
+      const assistantMsg: Message = {
+        id: Date.now(),
+        role: "assistant",
+        text: data.result,
+      }
+      const updatedMessages = [...messages, assistantMsg]
+      setMessages(updatedMessages)
+      broadcastState({ messages: updatedMessages, loading: false })
     } catch (error) {
       console.error("Failed to run action on backend:", error)
-      setMessages((m) => [
-        ...m,
-        {
-          id: Date.now(),
-          role: "assistant",
-          text: `> ERROR: Failed to execute action [${id.toUpperCase()}].`,
-        },
-      ])
+      const errorMsg: Message = {
+        id: Date.now(),
+        role: "assistant",
+        text: `> ERROR: Failed to execute action [${id.toUpperCase()}].`,
+      }
+      const updatedMessages = [...messages, errorMsg]
+      setMessages(updatedMessages)
+      broadcastState({ messages: updatedMessages, loading: false })
     } finally {
       setLoading(false)
     }
   }
-
-  // ── Docked: the slim edge pill ────────────────────────────────────────────
-  if (mode === "docked") {
-    return <EdgePill onExpand={() => setMode("floating")} />
-  }
-
-  const isFull = mode === "full"
 
   // Shared chat surface (log + input) reused by both full and floating modes.
   const chatSurface = (
@@ -342,7 +596,11 @@ export function MatrixOverlay() {
       {/* Grab & Inject context bar */}
       <button
         type="button"
-        onClick={() => setGrabbed((g) => !g)}
+        onClick={() => {
+          const next = !grabbed
+          setGrabbed(next)
+          broadcastState({ grabbed: next })
+        }}
         className="flex w-full items-center gap-2 border-b border-neutral-800 bg-black/40 px-3 py-2 text-left"
         aria-pressed={grabbed}
       >
@@ -350,7 +608,7 @@ export function MatrixOverlay() {
           className={grabbed ? "h-3.5 w-3.5 text-green-400" : "h-3.5 w-3.5 text-neutral-500"}
           strokeWidth={1.5}
         />
-        <span className="text-[10px] tracking-widest">
+        <span className="text-xs tracking-widest">
           {grabbed ? (
             <span className="text-green-400">CONTEXT CAPTURED: [Organization/Linkmate]</span>
           ) : (
@@ -365,13 +623,13 @@ export function MatrixOverlay() {
           {messages.map((msg) =>
             msg.role === "user" ? (
               <div key={msg.id} className="flex justify-end">
-                <div className="max-w-[80%] border border-neutral-700 bg-neutral-800 px-2 py-1.5 text-xs leading-relaxed text-neutral-100 whitespace-pre-wrap">
+                <div className="max-w-[80%] border border-neutral-700 bg-neutral-800 px-2.5 py-2 text-sm leading-relaxed text-neutral-100 whitespace-pre-wrap">
                   {msg.text}
                 </div>
               </div>
             ) : (
               <div key={msg.id} className="flex justify-start">
-                <div className="max-w-[85%] border border-neutral-800 bg-neutral-950/60 px-2 py-1.5 text-xs leading-relaxed text-green-400 whitespace-pre-wrap">
+                <div className="max-w-[85%] border border-neutral-800 bg-neutral-950/60 px-2.5 py-2 text-sm leading-relaxed text-green-400 whitespace-pre-wrap">
                   {renderMessageText(msg.text)}
                 </div>
               </div>
@@ -402,7 +660,7 @@ export function MatrixOverlay() {
                 }}
                 placeholder="> ASK JUNIOR CAO..."
                 aria-label="Message input"
-                className="h-9 flex-1 bg-transparent text-xs text-neutral-100 placeholder:text-neutral-500 focus:outline-none"
+                className="h-10 flex-1 bg-transparent text-sm text-neutral-100 placeholder:text-neutral-500 focus:outline-none"
               />
               <button
                 type="button"
@@ -421,8 +679,8 @@ export function MatrixOverlay() {
             aria-pressed={listening}
             className={
               listening
-                ? "flex h-9 w-9 items-center justify-center border border-green-400 bg-green-400/10 text-green-400"
-                : "flex h-9 w-9 items-center justify-center border border-neutral-700 bg-black text-neutral-400 hover:border-neutral-400 hover:text-neutral-100"
+                ? "flex h-10 w-10 items-center justify-center border border-green-400 bg-green-400/10 text-green-400"
+                : "flex h-10 w-10 items-center justify-center border border-neutral-700 bg-black text-neutral-400 hover:border-neutral-400 hover:text-neutral-100"
             }
           >
             <Mic className="h-4 w-4" strokeWidth={1.5} />
@@ -432,132 +690,203 @@ export function MatrixOverlay() {
     </>
   )
 
+  const renderPipPortal = () => {
+    if (!pipWindow) return null
+    return createPortal(
+      <div className="flex h-screen w-screen select-none flex-col border border-neutral-700 bg-neutral-950 font-mono text-neutral-100">
+        {/* Title bar */}
+        <div className="flex items-center justify-between border-b border-dashed border-neutral-700 px-3 py-2 shrink-0">
+          <span className="text-xs tracking-widest text-neutral-500">JUNIOR CAO (FLOATING)</span>
+          <button
+            type="button"
+            onClick={() => pipWindow.close()}
+            className="text-xs border border-neutral-700 px-2 py-0.5 bg-neutral-900 text-neutral-400 hover:border-red-400 hover:text-red-400"
+          >
+            CLOSE
+          </button>
+        </div>
+        {chatSurface}
+      </div>,
+      pipWindow.document.body
+    )
+  }
+
+  // ── Docked: the slim edge pill ────────────────────────────────────────────
+  if (mode === "docked") {
+    return (
+      <>
+        <EdgePill
+          onExpand={() => {
+            if (popupRef.current) {
+              popupRef.current.close()
+              popupRef.current = null
+            }
+            if (pipWindow) {
+              pipWindow.close()
+              setPipWindow(null)
+            }
+            setMode("full")
+          }}
+        />
+        {renderPipPortal()}
+      </>
+    )
+  }
+
+  const isFull = mode === "full"
+
   // ── Full: full-screen chat interface with the Actions panel on the side ────
   if (isFull) {
     return (
-      <div className="fixed inset-0 z-40 flex font-mono text-neutral-100">
-        {/* Sessions side panel */}
-        <aside
-          className="hidden w-64 shrink-0 flex-col border-r border-neutral-700 bg-neutral-950/85 p-3 md:flex"
-          style={dotPattern}
-        >
-          <div className="mb-3 border-b border-dashed border-neutral-700 pb-2 flex justify-between items-center text-[10px] tracking-widest text-neutral-500">
-            <span>SESSIONS</span>
-            <button
-              onClick={startNewChat}
-              className="text-[9px] border border-neutral-700 px-1.5 py-0.5 bg-neutral-900 text-neutral-400 hover:border-green-400 hover:text-green-400"
-            >
-              + NEW CHAT
-            </button>
-          </div>
-          <SessionPanel
-            sessions={sessions}
-            activeSessionId={activeSessionId}
-            onSelectSession={selectSession}
-            onDeleteSession={deleteSession}
-          />
-        </aside>
-
-        {/* Main chat column */}
-        <div className="flex min-w-0 flex-1 flex-col bg-neutral-950" style={dotPattern}>
-          {/* Title bar */}
-          <div className="flex items-center justify-between border-b border-dashed border-neutral-700 px-3 py-2">
-            <span className="text-[10px] tracking-widest text-neutral-500">
-              JUNIOR CAO
-            </span>
-            <div className="flex items-center gap-1">
+      <>
+        <div className="fixed inset-0 z-40 flex font-mono text-neutral-100">
+          {/* Sessions side panel */}
+          <aside
+            className="hidden w-72 shrink-0 flex-col border-r border-neutral-700 bg-neutral-950/85 p-3 md:flex"
+            style={dotPattern}
+          >
+            <div className="mb-3 border-b border-dashed border-neutral-700 pb-2 flex justify-between items-center text-xs tracking-widest text-neutral-500">
+              <span>SESSIONS</span>
               <button
-                type="button"
-                onClick={() => setMode("floating")}
-                aria-label="Minimize to floating window"
-                className="flex h-5 w-5 items-center justify-center border border-neutral-700 text-neutral-400 hover:border-neutral-400 hover:text-neutral-100"
+                onClick={startNewChat}
+                className="text-xs border border-neutral-700 px-1.5 py-0.5 bg-neutral-900 text-neutral-400 hover:border-green-400 hover:text-green-400"
               >
-                <Minus className="h-3 w-3" strokeWidth={1.5} />
+                + NEW CHAT
               </button>
             </div>
-          </div>
-          {chatSurface}
-        </div>
+            <SessionPanel
+              sessions={sessions}
+              activeSessionId={activeSessionId}
+              onSelectSession={selectSession}
+              onDeleteSession={deleteSession}
+            />
+          </aside>
 
-        {/* Actions side panel */}
-        <aside
-          className="hidden w-64 shrink-0 flex-col border-l border-neutral-700 bg-neutral-950/85 p-3 md:flex"
-          style={dotPattern}
-        >
-          <div className="mb-3 border-b border-dashed border-neutral-700 pb-2 text-[10px] tracking-widest text-neutral-500">
-            ACTIONS
+          {/* Main chat column */}
+          <div className="flex min-w-0 flex-1 flex-col bg-neutral-950" style={dotPattern}>
+            {/* Title bar */}
+            <div className="flex items-center justify-between border-b border-dashed border-neutral-700 px-3 py-2">
+              <span className="text-xs tracking-widest text-neutral-500">
+                JUNIOR CAO
+              </span>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={openPopup}
+                  aria-label="Minimize to floating window"
+                  className="flex h-5 w-5 items-center justify-center border border-neutral-700 text-neutral-400 hover:border-neutral-400 hover:text-neutral-100"
+                >
+                  <Minus className="h-3 w-3" strokeWidth={1.5} />
+                </button>
+              </div>
+            </div>
+            {chatSurface}
           </div>
-          <ActionPanel onAction={handleAction} />
-        </aside>
+
+          {/* Actions side panel */}
+          <aside
+            className="hidden w-72 shrink-0 flex-col border-l border-neutral-700 bg-neutral-950/85 p-3 md:flex"
+            style={dotPattern}
+          >
+            <div className="mb-3 border-b border-dashed border-neutral-700 pb-2 text-xs tracking-widest text-neutral-500">
+              ACTIONS
+            </div>
+            <ActionPanel onAction={handleAction} />
+          </aside>
+        </div>
+        {renderPipPortal()}
+      </>
+    )
+  }
+
+  // ── Popup: native browser popup window ─────────────────────────────────────
+  if (isPopup) {
+    return (
+      <div className="flex h-screen w-screen select-none flex-col border border-neutral-700 bg-neutral-950 font-mono text-neutral-100">
+        {/* Title bar */}
+        <div className="flex items-center justify-between border-b border-dashed border-neutral-700 px-3 py-2 shrink-0">
+          <span className="text-xs tracking-widest text-neutral-500">JUNIOR CAO (FLOATING)</span>
+          <button
+            type="button"
+            onClick={() => window.close()}
+            className="text-xs border border-neutral-700 px-2 py-0.5 bg-neutral-900 text-neutral-400 hover:border-red-400 hover:text-red-400"
+          >
+            CLOSE
+          </button>
+        </div>
+        {chatSurface}
       </div>
     )
   }
 
   // ── Floating: draggable PiP window ─────────────────────────────────────────
   return (
-    <div
-      className="fixed z-40 flex h-[520px] w-[400px] select-none flex-col border border-neutral-700 bg-neutral-950/80 font-mono text-neutral-100 backdrop-blur-md"
-      style={{
-        left: pos.x,
-        top: pos.y,
-        boxShadow: "6px 6px 0 0 #000",
-        ...dotPattern,
-      }}
-    >
-      {grabbed && <ActionMenu onAction={handleAction} />}
+    <>
+      <div
+        className="fixed z-40 flex h-[580px] w-[440px] select-none flex-col border border-neutral-700 bg-neutral-950/80 font-mono text-neutral-100 backdrop-blur-md"
+        style={{
+          left: pos.x,
+          top: pos.y,
+          boxShadow: "6px 6px 0 0 #000",
+          ...dotPattern,
+        }}
+      >
+        {grabbed && <ActionMenu onAction={handleAction} />}
 
-      {/* Title bar */}
-      <div className="flex items-center justify-between border-b border-dashed border-neutral-700 px-2 py-1.5">
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] tracking-widest text-neutral-500">JUNIOR CAO</span>
-          <button
-            onClick={startNewChat}
-            className="text-[9px] border border-neutral-700 px-1.5 py-0.5 bg-neutral-900 text-neutral-400 hover:border-green-400 hover:text-green-400"
-            title="Start new chat session"
+        {/* Title bar */}
+        <div className="flex items-center justify-between border-b border-dashed border-neutral-700 px-2 py-1.5">
+          <div className="flex items-center gap-2">
+            <span className="text-xs tracking-widest text-neutral-500">JUNIOR CAO</span>
+            <button
+              onClick={startNewChat}
+              className="text-xs border border-neutral-700 px-1.5 py-0.5 bg-neutral-900 text-neutral-400 hover:border-green-400 hover:text-green-400"
+              title="Start new chat session"
+            >
+              + NEW
+            </button>
+          </div>
+          <div
+            onPointerDown={startDrag}
+            className="mx-2 flex h-4 flex-1 cursor-grab items-center justify-center gap-[3px] active:cursor-grabbing"
+            aria-label="Drag handle"
+            role="button"
           >
-            + NEW
-          </button>
+            {Array.from({ length: 12 }).map((_, i) => (
+              <span key={i} className="h-[3px] w-[3px] bg-neutral-600" />
+            ))}
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setMode("full")}
+              aria-label="Maximize to full screen"
+              className="flex h-4 w-4 items-center justify-center border border-neutral-700 text-neutral-400 hover:border-neutral-400 hover:text-neutral-100"
+            >
+              <Maximize2 className="h-3 w-3" strokeWidth={1.5} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("docked")}
+              aria-label="Minimize to edge"
+              className="flex h-4 w-4 items-center justify-center border border-neutral-700 text-neutral-400 hover:border-neutral-400 hover:text-neutral-100"
+            >
+              <Minus className="h-3 w-3" strokeWidth={1.5} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("docked")}
+              aria-label="Close"
+              className="flex h-4 w-4 items-center justify-center border border-neutral-700 text-neutral-400 hover:border-neutral-400 hover:text-neutral-100"
+            >
+              <X className="h-3 w-3" strokeWidth={1.5} />
+            </button>
+          </div>
         </div>
-        <div
-          onPointerDown={startDrag}
-          className="mx-2 flex h-4 flex-1 cursor-grab items-center justify-center gap-[3px] active:cursor-grabbing"
-          aria-label="Drag handle"
-          role="button"
-        >
-          {Array.from({ length: 12 }).map((_, i) => (
-            <span key={i} className="h-[3px] w-[3px] bg-neutral-600" />
-          ))}
-        </div>
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={() => setMode("full")}
-            aria-label="Maximize to full screen"
-            className="flex h-4 w-4 items-center justify-center border border-neutral-700 text-neutral-400 hover:border-neutral-400 hover:text-neutral-100"
-          >
-            <Maximize2 className="h-3 w-3" strokeWidth={1.5} />
-          </button>
-          <button
-            type="button"
-            onClick={() => setMode("docked")}
-            aria-label="Minimize to edge"
-            className="flex h-4 w-4 items-center justify-center border border-neutral-700 text-neutral-400 hover:border-neutral-400 hover:text-neutral-100"
-          >
-            <Minus className="h-3 w-3" strokeWidth={1.5} />
-          </button>
-          <button
-            type="button"
-            onClick={() => setMode("docked")}
-            aria-label="Close"
-            className="flex h-4 w-4 items-center justify-center border border-neutral-700 text-neutral-400 hover:border-neutral-400 hover:text-neutral-100"
-          >
-            <X className="h-3 w-3" strokeWidth={1.5} />
-          </button>
-        </div>
+
+        {chatSurface}
       </div>
-
-      {chatSurface}
-    </div>
+      {renderPipPortal()}
+    </>
   )
 }
 
@@ -581,7 +910,7 @@ function SessionPanel({
           <div
             key={sess.id}
             onClick={() => onSelectSession(sess.id)}
-            className={`group flex items-center justify-between border px-2 py-1.5 cursor-pointer transition-colors text-[11px] font-mono ${
+            className={`group flex items-center justify-between border px-2 py-1.5 cursor-pointer transition-colors text-sm font-mono ${
               isActive
                 ? "border-green-400 bg-green-400/10 text-green-400"
                 : "border-neutral-800 bg-neutral-900 text-neutral-400 hover:border-neutral-500 hover:text-neutral-100"
@@ -590,7 +919,7 @@ function SessionPanel({
             <span className="truncate pr-2">{sess.title}</span>
             <button
               onClick={(e) => onDeleteSession(sess.id, e)}
-              className="opacity-0 group-hover:opacity-100 text-neutral-500 hover:text-red-400 px-1 text-[9px] border border-transparent hover:border-neutral-700 bg-transparent"
+              className="opacity-0 group-hover:opacity-100 text-neutral-500 hover:text-red-400 px-1 text-xs border border-transparent hover:border-neutral-700 bg-transparent"
               title="Delete session"
             >
               DEL
@@ -616,7 +945,7 @@ function ActionPanel({ onAction }: { onAction: (id: string) => void }) {
           key={id}
           type="button"
           onClick={() => onAction(id)}
-          className="border border-neutral-700 bg-neutral-900 px-2 py-2 text-left text-[11px] tracking-wider text-neutral-100 transition-colors hover:border-green-400 hover:text-green-400"
+          className="border border-neutral-700 bg-neutral-900 px-2.5 py-2.5 text-left text-sm tracking-wider text-neutral-100 transition-colors hover:border-green-400 hover:text-green-400"
         >
           {label}
         </button>

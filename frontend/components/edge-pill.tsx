@@ -26,16 +26,16 @@ export function EdgePill({ onExpand }: { onExpand: () => void }) {
       type="button"
       onClick={onExpand}
       aria-label="Expand assistant overlay"
-      className="fixed right-0 top-1/2 z-50 flex -translate-y-1/2 flex-col items-center gap-2 border border-neutral-700 bg-neutral-950/80 px-2 py-3 font-mono text-neutral-100 backdrop-blur-md transition-colors hover:border-neutral-500"
+      className="fixed right-0 top-1/2 z-50 flex -translate-y-1/2 flex-col items-center gap-2.5 border border-neutral-700 bg-neutral-950/80 px-2.5 py-4 font-mono text-neutral-100 backdrop-blur-md transition-colors hover:border-neutral-500"
       style={{
-        width: 40,
+        width: 48,
         backgroundImage: "radial-gradient(#ffffff20 1px, transparent 1px)",
         backgroundSize: "10px 10px",
       }}
     >
-      <span className="text-sm text-green-400">{blink ? ">" : "\u00A0"}</span>
+      <span className="text-base text-green-400">{blink ? ">" : "\u00A0"}</span>
       <span
-        className="text-[10px] tracking-widest text-neutral-400"
+        className="text-xs tracking-widest text-neutral-400"
         style={{ writingMode: "vertical-rl" }}
       >
         {time}

@@ -42,6 +42,7 @@ frontend/.env*.local
 .cursor/
 .gemini/
 .hermes/
+.traces/
 skills-lock.json
 
 # IDEs and Editors
