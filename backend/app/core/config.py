@@ -71,4 +71,16 @@ def get_settings() -> Settings:
         from app.core.config import get_settings
         settings = get_settings()
     """
-    return Settings()
+    settings = Settings()
+    
+    # Propagate LangChain/LangSmith environment variables to os.environ
+    # so the SDK can auto-detect them for tracing.
+    import os
+    if settings.LANGCHAIN_TRACING_V2:
+        os.environ["LANGCHAIN_TRACING_V2"] = "true"
+    if settings.LANGCHAIN_API_KEY:
+        os.environ["LANGCHAIN_API_KEY"] = settings.LANGCHAIN_API_KEY
+    if settings.LANGCHAIN_PROJECT:
+        os.environ["LANGCHAIN_PROJECT"] = settings.LANGCHAIN_PROJECT
+        
+    return settings
